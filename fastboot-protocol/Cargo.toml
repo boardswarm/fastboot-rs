@@ -1,0 +1,23 @@
+[package]
+name = "fastboot-protocol"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sjoerd Simons <sjoerd@collabora.com>"]
+license = "MIT OR Apache-2.0"
+description = "Fastboot protocol implementation"
+readme = "README.md"
+repository = "https://github.com/boardswarm/fastboot-rs"
+
+
+[dependencies]
+bytes = "1.8.0"
+futures = "0.3.31"
+nusb = "0.1.11"
+thiserror = "2.0.3"
+tracing = "0.1.40"
+
+[dev-dependencies]
+anyhow = "1.0.93"
+clap = { version = "4.5.21", features = ["derive"] }
+tokio = { version = "1.41.1", features = ["full"] }
+tracing-subscriber = "0.3.18"
