@@ -6,6 +6,8 @@ authors = ["Sjoerd Simons <sjoerd@collabora.com>"]
 license = "MIT OR Apache-2.0"
 description = "Low-level Android sparse image parsing headers"
 readme = "README.md"
+repository = "https://github.com/boardswarm/fastboot-rs"
+
 
 [dependencies]
 bytes = "1.8.0"
