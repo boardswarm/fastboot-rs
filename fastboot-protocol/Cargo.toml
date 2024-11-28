@@ -17,6 +17,7 @@ thiserror = "2.0.3"
 tracing = "0.1.40"
 
 [dev-dependencies]
+android-sparse-image = { path = "../android-sparse-image", version = "0.1.0" }
 anyhow = "1.0.93"
 clap = { version = "4.5.21", features = ["derive"] }
 tokio = { version = "1.41.1", features = ["full"] }

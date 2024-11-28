@@ -3,8 +3,8 @@ use std::{collections::HashMap, fmt::Display, io::Write};
 use nusb::transfer::RequestBuffer;
 use nusb::DeviceInfo;
 use thiserror::Error;
-use tracing::{debug, trace};
 use tracing::{info, warn};
+use tracing::{instrument, trace};
 
 use crate::protocol::FastBootResponse;
 use crate::protocol::{FastBootCommand, FastBootResponseParseError};
@@ -46,6 +46,7 @@ pub enum NusbFastBootOpenError {
 pub struct NusbFastBoot {
     interface: nusb::Interface,
     ep_out: u8,
+    max_out: usize,
     ep_in: u8,
     max_in: usize,
 }
@@ -101,6 +102,7 @@ impl NusbFastBoot {
         Ok(Self {
             interface,
             ep_out,
+            max_out,
             ep_in,
             max_in,
         })
@@ -191,8 +193,8 @@ impl NusbFastBoot {
 
     /// Prepare a download of a given size
     ///
-    /// When successfull the [SendData] helper should be used to actually send the data
-    pub async fn download(&mut self, size: u32) -> Result<SendData, NusbFastBootError> {
+    /// When successfull the [DataDownload] helper should be used to actually send the data
+    pub async fn download(&mut self, size: u32) -> Result<DataDownload, NusbFastBootError> {
         let cmd = FastBootCommand::<&str>::Download(size);
         self.send_command(cmd).await?;
         loop {
@@ -201,7 +203,7 @@ impl NusbFastBoot {
                 FastBootResponse::Info(i) => println!("info: {i}"),
                 FastBootResponse::Text(t) => info!("Text: {}", t),
                 FastBootResponse::Data(size) => {
-                    return Ok(SendData::new(self, size));
+                    return Ok(DataDownload::new(self, size));
                 }
                 FastBootResponse::Okay(_) => {
                     return Err(NusbFastBootError::FastbootUnexpectedReply)
@@ -276,8 +278,9 @@ impl NusbFastBoot {
     }
 }
 
+/// Error during data download
 #[derive(Debug, Error)]
-pub enum SendError {
+pub enum DownloadError {
     #[error("Trying to complete while nothing was Queued")]
     NothingQueued,
     #[error("Incorrect data length: expected {expected}, got {actual}")]
@@ -287,26 +290,37 @@ pub enum SendError {
 }
 
 /// Data download helper
-pub struct SendData<'s> {
+///
+/// To success stream data over usb it needs to be sent in blocks that are multiple of the max
+/// endpoint size, otherwise the receiver may complain. It also should only send as much data as
+/// was indicate in the DATA command.
+///
+/// This helper ensures both invariants are met. To do this data needs to be sent by using
+/// [DataDownload::extend_from_slice] or [DataDownload::get_mut_data], after sending the data [DataDownload::finish] should be called to
+/// validate and finalize.
+pub struct DataDownload<'s> {
     fastboot: &'s mut NusbFastBoot,
     queue: nusb::transfer::Queue<Vec<u8>>,
     size: u32,
     left: u32,
+    current: Vec<u8>,
 }
 
-impl<'s> SendData<'s> {
-    pub fn new(fastboot: &'s mut NusbFastBoot, size: u32) -> SendData<'s> {
+impl<'s> DataDownload<'s> {
+    fn new(fastboot: &'s mut NusbFastBoot, size: u32) -> DataDownload<'s> {
         let queue = fastboot.interface.bulk_out_queue(fastboot.ep_out);
+        let current = Self::allocate_buffer(fastboot.max_out);
         Self {
             fastboot,
             queue,
             size,
             left: size,
+            current,
         }
     }
 }
 
-impl SendData<'_> {
+impl DataDownload<'_> {
     /// Total size of the data transfer
     pub fn size(&self) -> u32 {
         self.size
@@ -317,72 +331,102 @@ impl SendData<'_> {
         self.left
     }
 
-    /// Pending transfers
-    pub fn pending(&self) -> usize {
-        self.queue.pending()
-    }
-
-    /// Queue a data transfer
+    /// Extend the streaming from a slice
     ///
-    /// The total amount of data queued up should not be more then the total data size
-    pub fn queue(&mut self, data: Vec<u8>) -> Result<(), SendError> {
-        let len = data.len() as u32;
-        if len > self.left {
-            return Err(SendError::IncorrectDataLength {
-                expected: self.size,
-                actual: len - self.left + self.size,
-            });
+    /// This will copy all provided data and send it out if enough is collected. The total amount
+    /// of data being sent should not exceed the download size
+    pub async fn extend_from_slice(&mut self, mut data: &[u8]) -> Result<(), DownloadError> {
+        self.update_size(data.len() as u32)?;
+        loop {
+            let left = self.current.capacity() - self.current.len();
+            if left >= data.len() {
+                self.current.extend_from_slice(data);
+                break;
+            } else {
+                self.current.extend_from_slice(&data[0..left]);
+                self.next_buffer().await?;
+                data = &data[left..];
+            }
         }
-        self.left -= len;
-        self.queue.submit(data);
         Ok(())
     }
 
-    /// Complete the next transfer.
+    /// This will provide a mutable reference to a [u8] of at most `max` size. The returned slice
+    /// should be completely filled with data to be downloaded to the device
     ///
-    /// On success this returns the allocation of the finished transfer. This can be re-used to
-    /// limit allocations.
-    pub async fn complete_next(&mut self) -> Result<Vec<u8>, SendError> {
-        if self.pending() == 0 {
-            Err(SendError::NothingQueued)
+    /// The total amount of data should not exceed the download size
+    pub async fn get_mut_data(&mut self, max: usize) -> Result<&mut [u8], DownloadError> {
+        if self.current.capacity() == self.current.len() {
+            self.next_buffer().await?;
+        }
+
+        let left = self.current.capacity() - self.current.len();
+        let size = left.min(max);
+        self.update_size(size as u32)?;
+
+        let len = self.current.len();
+        self.current.resize(len + size, 0);
+        Ok(&mut self.current[len..])
+    }
+
+    fn update_size(&mut self, size: u32) -> Result<(), DownloadError> {
+        if size > self.left {
+            return Err(DownloadError::IncorrectDataLength {
+                expected: self.size,
+                actual: size - self.left + self.size,
+            });
+        }
+        self.left -= size;
+        Ok(())
+    }
+
+    fn allocate_buffer(max_out: usize) -> Vec<u8> {
+        // Allocate about 1Mb of buffer ensuring it's always a multiple of the maximum out packet
+        // size
+        let size = (1024usize * 1024).next_multiple_of(max_out);
+        Vec::with_capacity(size)
+    }
+
+    async fn next_buffer(&mut self) -> Result<(), DownloadError> {
+        let mut next = if self.queue.pending() < 3 {
+            Self::allocate_buffer(self.fastboot.max_out)
         } else {
             let r = self.queue.next_complete().await;
-            debug!("=> D: {:?}", r.status);
             r.status.map_err(NusbFastBootError::from)?;
             let mut data = r.data.reuse();
             data.truncate(0);
-            Ok(data)
-        }
-    }
-
-    /// Get a buffer to be queued up
-    ///
-    /// Helper to create or re-use a buffer to be queued up. By default this creates
-    /// new vectors with a 1Mb capacity unless 3 or more buffers are queued, in which case it
-    /// returns a buffer to re-use.
-    ///
-    /// Buffers are always returned with no data (len == 0)
-    pub async fn get_buffer(&mut self) -> Result<Vec<u8>, SendError> {
-        if self.pending() < 3 {
-            Ok(Vec::with_capacity(1024 * 1024))
-        } else {
-            self.complete_next().await
-        }
+            data
+        };
+        std::mem::swap(&mut next, &mut self.current);
+        self.queue.submit(next);
+        Ok(())
     }
 
     /// Finish all pending transfer
     ///
     /// This should only be called if all data has been queued up (matching the total size)
-    pub async fn finish(mut self) -> Result<(), SendError> {
+    #[instrument(skip_all, err)]
+    pub async fn finish(mut self) -> Result<(), DownloadError> {
         if self.left != 0 {
-            return Err(SendError::IncorrectDataLength {
+            return Err(DownloadError::IncorrectDataLength {
                 expected: self.size,
                 actual: self.size - self.left,
             });
         }
-        while self.pending() > 0 {
-            self.complete_next().await?;
+
+        if !self.current.is_empty() {
+            let current = std::mem::take(&mut self.current);
+            self.queue.submit(current);
         }
+
+        while self.queue.pending() > 0 {
+            self.queue
+                .next_complete()
+                .await
+                .status
+                .map_err(NusbFastBootError::from)?;
+        }
+
         self.fastboot.handle_responses().await?;
         Ok(())
     }
