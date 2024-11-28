@@ -205,6 +205,7 @@ dependencies = [
 name = "fastboot-protocol"
 version = "0.1.0"
 dependencies = [
+ "android-sparse-image",
  "anyhow",
  "bytes",
  "clap",

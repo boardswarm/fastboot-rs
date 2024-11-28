@@ -1,4 +1,8 @@
 #![doc = include_str!("../README.md")]
+
+/// Helpers to split an image into multiple smaller ones
+pub mod split;
+
 use bytes::{Buf, BufMut};
 use log::trace;
 use strum::FromRepr;
@@ -10,6 +14,7 @@ pub const FILE_HEADER_BYTES_LEN: usize = 28;
 pub const CHUNK_HEADER_BYTES_LEN: usize = 12;
 /// File magic - This are the first 4 bytes in little-endian
 pub const HEADER_MAGIC: u32 = 0xed26ff3a;
+pub const DEFAULT_BLOCKSIZE: u32 = 4096;
 
 /// Byte parsing errors
 #[derive(Clone, Debug, Error)]
@@ -140,6 +145,38 @@ pub struct ChunkHeader {
 }
 
 impl ChunkHeader {
+    /// Create a don't care header for a given length in blocks
+    pub fn new_dontcare(blocks: u32) -> Self {
+        ChunkHeader {
+            chunk_type: ChunkType::DontCare,
+            total_size: CHUNK_HEADER_BYTES_LEN as u32,
+            chunk_size: blocks,
+        }
+    }
+
+    /// Create a new raw header for a given amount in blocks for block_size
+    ///
+    /// The actual data should follow this header
+    pub fn new_raw(blocks: u32, block_size: u32) -> Self {
+        ChunkHeader {
+            chunk_type: ChunkType::Raw,
+            chunk_size: blocks,
+            total_size: (CHUNK_HEADER_BYTES_LEN as u32)
+                .saturating_add(blocks.saturating_mul(block_size)),
+        }
+    }
+
+    /// Create a new fill header for a given amount of blocks to be filled
+    ///
+    /// The header should be followed by 4 bytes indicate the data to fill with
+    pub fn new_fill(blocks: u32) -> Self {
+        ChunkHeader {
+            chunk_type: ChunkType::Fill,
+            chunk_size: blocks,
+            total_size: CHUNK_HEADER_BYTES_LEN as u32 + 4,
+        }
+    }
+
     /// Create new ChunkHeader from a raw header
     pub fn from_bytes(bytes: &ChunkHeaderBytes) -> Result<ChunkHeader, ParseError> {
         let mut bytes = &bytes[..];
