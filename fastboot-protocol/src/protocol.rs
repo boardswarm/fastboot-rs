@@ -10,6 +10,14 @@ pub fn parse_u32_hex(hex: &str) -> Result<u32, ParseIntError> {
     u32::from_str_radix(hex, 16)
 }
 
+/// Parse a hexadecimal 0x prefixed string e.g. 0x1234 into a u64
+pub fn parse_u64_hex(hex: &str) -> Result<u64, ParseIntError> {
+    // Can't create a custom ParseIntError; so if there is no 0x prefix, work around it providing
+    // an invalid hex string
+    let hex = hex.strip_prefix("0x").unwrap_or("invalid");
+    u64::from_str_radix(hex, 16)
+}
+
 /// Fastboot commands
 #[derive(Debug)]
 pub enum FastBootCommand<S> {
@@ -116,7 +124,23 @@ mod test {
     fn parse_valid_u32_hex() {
         let hex = parse_u32_hex("0x123456").unwrap();
         assert_eq!(0x123456, hex);
+
+        let hex = parse_u32_hex("0x0012abcd").unwrap();
+        assert_eq!(0x12abcd, hex);
     }
+
+    #[test]
+    fn parse_valid_u64_hex() {
+        let hex = parse_u64_hex("0x123456").unwrap();
+        assert_eq!(0x123456, hex);
+
+        let hex = parse_u64_hex("0x0012abcd").unwrap();
+        assert_eq!(0x12abcd, hex);
+
+        let hex = parse_u64_hex("0x0000000134b72400").unwrap();
+        assert_eq!(0x134b72400, hex);
+    }
+
     #[test]
     fn parse_invalid_u32_hex() {
         parse_u32_hex("123456").unwrap_err();
