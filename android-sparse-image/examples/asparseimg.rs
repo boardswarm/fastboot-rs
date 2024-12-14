@@ -72,7 +72,7 @@ fn inspect(img: &Path) -> anyhow::Result<()> {
 
 fn expand(img: &Path, out: &Path) -> anyhow::Result<()> {
     let mut file = std::fs::File::open(img)?;
-    let mut output = std::fs::OpenOptions::new()
+    let output = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
@@ -80,6 +80,7 @@ fn expand(img: &Path, out: &Path) -> anyhow::Result<()> {
     let mut header_bytes: FileHeaderBytes = [0; FILE_HEADER_BYTES_LEN];
     file.read_exact(&mut header_bytes)?;
 
+    let mut output = std::io::BufWriter::new(output);
     let header = FileHeader::from_bytes(&header_bytes)?;
     for _ in 0..header.chunks {
         let mut chunk_bytes: ChunkHeaderBytes = [0; CHUNK_HEADER_BYTES_LEN];
