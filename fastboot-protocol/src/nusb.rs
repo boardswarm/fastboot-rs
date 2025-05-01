@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display, io::Write};
 
 use nusb::transfer::RequestBuffer;
-use nusb::DeviceInfo;
+pub use nusb::{transfer::TransferError, Device, DeviceInfo, Interface};
 use thiserror::Error;
 use tracing::{info, warn};
 use tracing::{instrument, trace};
@@ -10,7 +10,7 @@ use crate::protocol::FastBootResponse;
 use crate::protocol::{FastBootCommand, FastBootResponseParseError};
 
 /// List fastboot devices
-pub fn devices() -> std::result::Result<impl Iterator<Item = DeviceInfo>, nusb::Error> {
+pub fn devices() -> Result<impl Iterator<Item = DeviceInfo>, nusb::Error> {
     Ok(nusb::list_devices()?.filter(|d| NusbFastBoot::find_fastboot_interface(d).is_some()))
 }
 
@@ -111,7 +111,7 @@ impl NusbFastBoot {
     /// Create a fastboot client based on a USB device. Interface number must be the fastboot
     /// interface
     #[tracing::instrument(skip_all, err)]
-    pub fn from_device(device: nusb::Device, interface: u8) -> Result<Self, NusbFastBootOpenError> {
+    pub fn from_device(device: Device, interface: u8) -> Result<Self, NusbFastBootOpenError> {
         let interface = device
             .claim_interface(interface)
             .map_err(NusbFastBootOpenError::Interface)?;
@@ -200,7 +200,7 @@ impl NusbFastBoot {
         loop {
             let resp = self.read_response().await?;
             match resp {
-                FastBootResponse::Info(i) => println!("info: {i}"),
+                FastBootResponse::Info(i) => info!("info: {i}"),
                 FastBootResponse::Text(t) => info!("Text: {}", t),
                 FastBootResponse::Data(size) => {
                     return Ok(DataDownload::new(self, size));
