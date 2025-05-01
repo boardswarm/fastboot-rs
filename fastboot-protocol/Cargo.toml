@@ -20,5 +20,5 @@ tracing = "0.1.40"
 android-sparse-image = { path = "../android-sparse-image", version = "0.1.2" }
 anyhow = "1.0.93"
 clap = { version = "4.5.21", features = ["derive"] }
-tokio = { version = "1.41.1", features = ["full"] }
+tokio = { version = "1.43.1", features = ["full"] }
 tracing-subscriber = "0.3.18"
