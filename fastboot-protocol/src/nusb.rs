@@ -200,7 +200,7 @@ impl NusbFastBoot {
         loop {
             let resp = self.read_response().await?;
             match resp {
-                FastBootResponse::Info(i) => println!("info: {i}"),
+                FastBootResponse::Info(i) => info!("info: {i}"),
                 FastBootResponse::Text(t) => info!("Text: {}", t),
                 FastBootResponse::Data(size) => {
                     return Ok(DataDownload::new(self, size));
