@@ -2,6 +2,13 @@ use std::{fmt::Display, num::ParseIntError};
 use thiserror::Error;
 use tracing::trace;
 
+fn bytes_slice_null(bytes: &[u8]) -> &[u8] {
+    match bytes.iter().position(|&b| b == 0x00) {
+        Some(pos) => &bytes[..pos],
+        None => bytes,
+    }
+}
+
 /// Parse a hexadecimal 0x prefixed string e.g. 0x1234 into a u32
 pub fn parse_u32_hex(hex: &str) -> Result<u32, ParseIntError> {
     // Can't create a custom ParseIntError; so if there is no 0x prefix, work around it providing
@@ -66,6 +73,12 @@ pub enum FastBootResponseParseError {
     /// Unknown response type
     #[error("Unknown response type")]
     UnknownReply,
+    /// Couldn't parse response type
+    #[error("Couldn't parse response type")]
+    ParseType,
+    /// Couldn't parse response payload
+    #[error("Couldn't parse response payload")]
+    ParsePayload,
     /// Couldn't parse DATA length
     #[error("Couldn't parse DATA length")]
     DataLength,
@@ -108,8 +121,10 @@ impl<'a> FastBootResponse {
         if bytes.len() < 4 {
             Err(FastBootResponseParseError::UnknownReply)
         } else {
-            let resp = std::str::from_utf8(&bytes[0..4]).unwrap();
-            let data = std::str::from_utf8(&bytes[4..]).unwrap();
+            let resp =
+                std::str::from_utf8(&bytes[0..4]).or(Err(FastBootResponseParseError::ParseType))?;
+            let data = std::str::from_utf8(bytes_slice_null(&bytes[4..]))
+                .or(Err(FastBootResponseParseError::ParsePayload))?;
 
             Self::from_parts(resp, data)
         }
@@ -153,8 +168,20 @@ mod test {
     }
 
     #[test]
+    fn response_parse_ok_with_null() {
+        let r = FastBootResponse::from_bytes(b"OKAYtest\0foo").unwrap();
+        assert_eq!(r, FastBootResponse::Okay("test".to_string()));
+    }
+
+    #[test]
     fn response_parse_fail() {
         let r = FastBootResponse::from_bytes(b"FAILtest").unwrap();
+        assert_eq!(r, FastBootResponse::Fail("test".to_string()));
+    }
+
+    #[test]
+    fn response_parse_fail_with_null() {
+        let r = FastBootResponse::from_bytes(b"FAILtest\0foo").unwrap();
         assert_eq!(r, FastBootResponse::Fail("test".to_string()));
     }
 
@@ -165,13 +192,32 @@ mod test {
     }
 
     #[test]
+    fn response_parse_info_with_null() {
+        let r = FastBootResponse::from_bytes(b"INFOtest\0foo").unwrap();
+        assert_eq!(r, FastBootResponse::Info("test".to_string()));
+    }
+
+    #[test]
     fn response_parse_text() {
         let r = FastBootResponse::from_bytes(b"TEXTtest").unwrap();
         assert_eq!(r, FastBootResponse::Text("test".to_string()));
     }
+
+    #[test]
+    fn response_parse_text_with_null() {
+        let r = FastBootResponse::from_bytes(b"TEXTtest\0foo").unwrap();
+        assert_eq!(r, FastBootResponse::Text("test".to_string()));
+    }
+
     #[test]
     fn response_parse_data() {
         let r = FastBootResponse::from_bytes(b"DATA00123456").unwrap();
+        assert_eq!(r, FastBootResponse::Data(0x123456));
+    }
+
+    #[test]
+    fn response_parse_data_with_null() {
+        let r = FastBootResponse::from_bytes(b"DATA00123456\0foo").unwrap();
         assert_eq!(r, FastBootResponse::Data(0x123456));
     }
 
