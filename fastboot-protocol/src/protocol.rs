@@ -73,6 +73,12 @@ pub enum FastBootResponseParseError {
     /// Unknown response type
     #[error("Unknown response type")]
     UnknownReply,
+    /// Couldn't parse response type
+    #[error("Couldn't parse response type")]
+    ParseType,
+    /// Couldn't parse response payload
+    #[error("Couldn't parse response payload")]
+    ParsePayload,
     /// Couldn't parse DATA length
     #[error("Couldn't parse DATA length")]
     DataLength,
@@ -115,8 +121,10 @@ impl<'a> FastBootResponse {
         if bytes.len() < 4 {
             Err(FastBootResponseParseError::UnknownReply)
         } else {
-            let resp = std::str::from_utf8(&bytes[0..4]).unwrap();
-            let data = std::str::from_utf8(bytes_slice_null(&bytes[4..])).unwrap();
+            let resp =
+                std::str::from_utf8(&bytes[0..4]).or(Err(FastBootResponseParseError::ParseType))?;
+            let data = std::str::from_utf8(bytes_slice_null(&bytes[4..]))
+                .or(Err(FastBootResponseParseError::ParsePayload))?;
 
             Self::from_parts(resp, data)
         }
