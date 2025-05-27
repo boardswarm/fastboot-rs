@@ -223,6 +223,14 @@ impl NusbFastBoot {
         })
     }
 
+    /// Continue booting
+    pub async fn continue_boot(&mut self) -> Result<(), NusbFastBootError> {
+        let cmd = FastBootCommand::<&str>::Continue;
+        self.execute(cmd).await.map(|v| {
+            trace!("Continue ok: {v}");
+        })
+    }
+
     /// Erasing the given target partition
     pub async fn erase(&mut self, target: &str) -> Result<(), NusbFastBootError> {
         let cmd = FastBootCommand::Erase(target);
