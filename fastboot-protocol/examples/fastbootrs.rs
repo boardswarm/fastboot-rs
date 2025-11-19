@@ -123,20 +123,20 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let opts = Opts::parse();
 
-    let mut devices = fastboot_protocol::nusb::devices()?;
+    let mut devices = fastboot_protocol::nusb::devices().await?;
     let info = devices
         .next()
         .ok_or_else(|| anyhow::anyhow!("No Device found"))?;
 
     println!(
         "Using Fastboot device: {}:{} M: {} P: {}",
-        info.bus_number(),
+        info.busnum(),
         info.device_address(),
         info.manufacturer_string().unwrap_or_default(),
         info.product_string().unwrap_or_default()
     );
 
-    let mut fb = NusbFastBoot::from_info(&info)?;
+    let mut fb = NusbFastBoot::from_info(&info).await?;
 
     match opts {
         Opts::GetVar { var } => {
