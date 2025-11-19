@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display, io::Write};
 
-use nusb::transfer::RequestBuffer;
+use nusb::transfer::{Buffer, Bulk, In, Out};
 pub use nusb::{transfer::TransferError, Device, DeviceInfo, Interface};
 use thiserror::Error;
 use tracing::{info, warn};
@@ -10,8 +10,10 @@ use crate::protocol::FastBootResponse;
 use crate::protocol::{FastBootCommand, FastBootResponseParseError};
 
 /// List fastboot devices
-pub fn devices() -> Result<impl Iterator<Item = DeviceInfo>, nusb::Error> {
-    Ok(nusb::list_devices()?.filter(|d| NusbFastBoot::find_fastboot_interface(d).is_some()))
+pub async fn devices() -> Result<impl Iterator<Item = DeviceInfo>, nusb::Error> {
+    Ok(nusb::list_devices()
+        .await?
+        .filter(|d| NusbFastBoot::find_fastboot_interface(d).is_some()))
 }
 
 /// Fastboot communication errors
@@ -44,10 +46,11 @@ pub enum NusbFastBootOpenError {
 
 /// Nusb fastboot client
 pub struct NusbFastBoot {
+    #[allow(dead_code)]
     interface: nusb::Interface,
-    ep_out: u8,
+    ep_out: nusb::Endpoint<Bulk, Out>,
+    ep_in: nusb::Endpoint<Bulk, In>,
     max_out: usize,
-    ep_in: u8,
     max_in: usize,
 }
 
@@ -67,12 +70,12 @@ impl NusbFastBoot {
     /// interface
     #[tracing::instrument(skip_all, err)]
     pub fn from_interface(interface: nusb::Interface) -> Result<Self, NusbFastBootOpenError> {
-        let (ep_out, max_out, ep_in, max_in) = interface
+        let (ep_out_addr, max_out, ep_in_addr, max_in) = interface
             .descriptors()
             .find_map(|alt| {
                 // Requires one bulk IN and one bulk OUT
                 let (ep_out, max_out) = alt.endpoints().find_map(|end| {
-                    if end.transfer_type() == nusb::transfer::EndpointType::Bulk
+                    if end.transfer_type() == nusb::descriptors::TransferType::Bulk
                         && end.direction() == nusb::transfer::Direction::Out
                     {
                         Some((end.address(), end.max_packet_size()))
@@ -81,7 +84,7 @@ impl NusbFastBoot {
                     }
                 })?;
                 let (ep_in, max_in) = alt.endpoints().find_map(|end| {
-                    if end.transfer_type() == nusb::transfer::EndpointType::Bulk
+                    if end.transfer_type() == nusb::descriptors::TransferType::Bulk
                         && end.direction() == nusb::transfer::Direction::In
                     {
                         Some((end.address(), end.max_packet_size()))
@@ -94,16 +97,24 @@ impl NusbFastBoot {
             .ok_or(NusbFastBootOpenError::MissingEndpoints)?;
         trace!(
             "Fastboot endpoints: OUT: {} (max: {}), IN: {} (max: {})",
-            ep_out,
+            ep_out_addr,
             max_out,
-            ep_in,
+            ep_in_addr,
             max_in
         );
+
+        let ep_out = interface
+            .endpoint(ep_out_addr)
+            .map_err(|e| NusbFastBootOpenError::Interface(e.into()))?;
+        let ep_in = interface
+            .endpoint(ep_in_addr)
+            .map_err(|e| NusbFastBootOpenError::Interface(e.into()))?;
+
         Ok(Self {
             interface,
             ep_out,
-            max_out,
             ep_in,
+            max_out,
             max_in,
         })
     }
@@ -111,26 +122,33 @@ impl NusbFastBoot {
     /// Create a fastboot client based on a USB device. Interface number must be the fastboot
     /// interface
     #[tracing::instrument(skip_all, err)]
-    pub fn from_device(device: Device, interface: u8) -> Result<Self, NusbFastBootOpenError> {
+    pub async fn from_device(device: Device, interface: u8) -> Result<Self, NusbFastBootOpenError> {
         let interface = device
             .claim_interface(interface)
-            .map_err(NusbFastBootOpenError::Interface)?;
+            .await
+            .map_err(|e| NusbFastBootOpenError::Interface(e.into()))?;
         Self::from_interface(interface)
     }
 
     /// Create a fastboot client based on device info. The correct interface will automatically be
     /// determined
     #[tracing::instrument(skip_all, err)]
-    pub fn from_info(info: &DeviceInfo) -> Result<Self, NusbFastBootOpenError> {
+    pub async fn from_info(info: &DeviceInfo) -> Result<Self, NusbFastBootOpenError> {
         let interface =
             Self::find_fastboot_interface(info).ok_or(NusbFastBootOpenError::MissingInterface)?;
-        let device = info.open().map_err(NusbFastBootOpenError::Device)?;
-        Self::from_device(device, interface)
+        let device = info
+            .open()
+            .await
+            .map_err(|e| NusbFastBootOpenError::Device(e.into()))?;
+        Self::from_device(device, interface).await
     }
 
     #[tracing::instrument(skip_all, err)]
     async fn send_data(&mut self, data: Vec<u8>) -> Result<(), NusbFastBootError> {
-        self.interface.bulk_out(self.ep_out, data).await.status?;
+        let buffer = Buffer::from(data);
+        self.ep_out.submit(buffer);
+        let completion = self.ep_out.next_complete().await;
+        completion.status?;
         Ok(())
     }
 
@@ -150,9 +168,10 @@ impl NusbFastBoot {
 
     #[tracing::instrument(skip_all, err)]
     async fn read_response(&mut self) -> Result<FastBootResponse, FastBootResponseParseError> {
-        let req = RequestBuffer::new(self.max_in);
-        let resp = self.interface.bulk_in(self.ep_in, req).await;
-        FastBootResponse::from_bytes(&resp.data)
+        let buffer = Buffer::new(self.max_in);
+        self.ep_in.submit(buffer);
+        let completion = self.ep_in.next_complete().await;
+        FastBootResponse::from_bytes(&completion.buffer)
     }
 
     #[tracing::instrument(skip_all, err)]
@@ -194,7 +213,7 @@ impl NusbFastBoot {
     /// Prepare a download of a given size
     ///
     /// When successfull the [DataDownload] helper should be used to actually send the data
-    pub async fn download(&mut self, size: u32) -> Result<DataDownload, NusbFastBootError> {
+    pub async fn download(&mut self, size: u32) -> Result<DataDownload<'_>, NusbFastBootError> {
         let cmd = FastBootCommand::<&str>::Download(size);
         self.send_command(cmd).await?;
         loop {
@@ -308,19 +327,16 @@ pub enum DownloadError {
 /// validate and finalize.
 pub struct DataDownload<'s> {
     fastboot: &'s mut NusbFastBoot,
-    queue: nusb::transfer::Queue<Vec<u8>>,
     size: u32,
     left: u32,
-    current: Vec<u8>,
+    current: Buffer,
 }
 
 impl<'s> DataDownload<'s> {
     fn new(fastboot: &'s mut NusbFastBoot, size: u32) -> DataDownload<'s> {
-        let queue = fastboot.interface.bulk_out_queue(fastboot.ep_out);
         let current = Self::allocate_buffer(fastboot.max_out);
         Self {
             fastboot,
-            queue,
             size,
             left: size,
             current,
@@ -368,13 +384,13 @@ impl DataDownload<'_> {
             self.next_buffer().await?;
         }
 
-        let left = self.current.capacity() - self.current.len();
-        let size = left.min(max);
+        let remaining = self.current.capacity() - self.current.len();
+        let size = remaining.min(max);
         self.update_size(size as u32)?;
 
-        let len = self.current.len();
-        self.current.resize(len + size, 0);
-        Ok(&mut self.current[len..])
+        // Extend the buffer with uninitialized data
+        let slice = self.current.extend_fill(size, 0);
+        Ok(slice)
     }
 
     fn update_size(&mut self, size: u32) -> Result<(), DownloadError> {
@@ -388,25 +404,28 @@ impl DataDownload<'_> {
         Ok(())
     }
 
-    fn allocate_buffer(max_out: usize) -> Vec<u8> {
+    fn allocate_buffer(max_out: usize) -> Buffer {
         // Allocate about 1Mb of buffer ensuring it's always a multiple of the maximum out packet
         // size
         let size = (1024usize * 1024).next_multiple_of(max_out);
-        Vec::with_capacity(size)
+        Buffer::new(size)
     }
 
     async fn next_buffer(&mut self) -> Result<(), DownloadError> {
-        let mut next = if self.queue.pending() < 3 {
-            Self::allocate_buffer(self.fastboot.max_out)
-        } else {
-            let r = self.queue.next_complete().await;
-            r.status.map_err(NusbFastBootError::from)?;
-            let mut data = r.data.reuse();
-            data.truncate(0);
-            data
-        };
-        std::mem::swap(&mut next, &mut self.current);
-        self.queue.submit(next);
+        // Submit the current buffer if it has data
+        if !self.current.is_empty() {
+            let mut buffer = Self::allocate_buffer(self.fastboot.max_out);
+            std::mem::swap(&mut buffer, &mut self.current);
+            self.fastboot.ep_out.submit(buffer);
+
+            // Wait for completion if we have pending transfers
+            if self.fastboot.ep_out.pending() >= 3 {
+                let completion = self.fastboot.ep_out.next_complete().await;
+                completion.status.map_err(NusbFastBootError::from)?;
+                self.current = completion.buffer;
+                self.current.clear();
+            }
+        }
         Ok(())
     }
 
@@ -423,16 +442,13 @@ impl DataDownload<'_> {
         }
 
         if !self.current.is_empty() {
-            let current = std::mem::take(&mut self.current);
-            self.queue.submit(current);
+            let current = std::mem::replace(&mut self.current, Buffer::new(0));
+            self.fastboot.ep_out.submit(current);
         }
 
-        while self.queue.pending() > 0 {
-            self.queue
-                .next_complete()
-                .await
-                .status
-                .map_err(NusbFastBootError::from)?;
+        while self.fastboot.ep_out.pending() > 0 {
+            let completion = self.fastboot.ep_out.next_complete().await;
+            completion.status.map_err(NusbFastBootError::from)?;
         }
 
         self.fastboot.handle_responses().await?;
