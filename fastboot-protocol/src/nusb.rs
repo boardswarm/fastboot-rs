@@ -216,7 +216,7 @@ impl NusbFastBoot {
 
     /// Prepare a download of a given size
     ///
-    /// When successfull the [DataDownload] helper should be used to actually send the data
+    /// When successful the [DataDownload] helper should be used to actually send the data
     pub async fn download(&'_ mut self, size: u32) -> Result<DataDownload<'_>, NusbFastBootError> {
         let cmd = FastBootCommand::<&str>::Download(size);
         self.send_command(cmd).await?;
