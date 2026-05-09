@@ -137,7 +137,7 @@ impl NusbFastBoot {
     #[tracing::instrument(skip_all, err)]
     async fn send_data(&mut self, data: Vec<u8>) -> Result<(), NusbFastBootError> {
         self.ep_out.submit(data.into());
-        self.ep_out.next_complete().await;
+        self.ep_out.next_complete().await.into_result()?;
         Ok(())
     }
 
@@ -193,6 +193,13 @@ impl NusbFastBoot {
     ) -> Result<String, NusbFastBootError> {
         self.send_command(cmd).await?;
         self.handle_responses().await
+    }
+
+    fn allocate(&self) -> Buffer {
+        // Allocate about 1Mb of buffer ensuring it's always a multiple of the maximum out packet
+        // size
+        let size = (1024usize * 1024).next_multiple_of(self.max_out);
+        self.ep_out.allocate(size)
     }
 
     /// Get the named variable
@@ -322,12 +329,12 @@ pub struct DataDownload<'s> {
     fastboot: &'s mut NusbFastBoot,
     size: u32,
     left: u32,
-    current: Vec<u8>,
+    current: Buffer,
 }
 
 impl<'s> DataDownload<'s> {
     fn new(fastboot: &'s mut NusbFastBoot, size: u32) -> DataDownload<'s> {
-        let current = Self::allocate_buffer(fastboot.max_out).to_vec();
+        let current = fastboot.allocate();
         Self {
             fastboot,
             size,
@@ -382,7 +389,7 @@ impl DataDownload<'_> {
         self.update_size(size as u32)?;
 
         let len = self.current.len();
-        self.current.resize(len + size, 0);
+        self.current.extend_fill(size, 0);
         Ok(&mut self.current[len..])
     }
 
@@ -397,26 +404,18 @@ impl DataDownload<'_> {
         Ok(())
     }
 
-    fn allocate_buffer(max_out: usize) -> Vec<u8> {
-        // Allocate about 1Mb of buffer ensuring it's always a multiple of the maximum out packet
-        // size
-        let size = (1024usize * 1024).next_multiple_of(max_out);
-        Vec::with_capacity(size)
-    }
-
     async fn next_buffer(&mut self) -> Result<(), DownloadError> {
-        if self.fastboot.ep_out.pending() >= 3 {
-            let completion = self.fastboot.ep_out.next_complete().await;
+        let mut next = if self.fastboot.ep_out.pending() < 3 {
+            self.fastboot.allocate()
+        } else {
+            let mut completion = self.fastboot.ep_out.next_complete().await;
             completion.status.map_err(NusbFastBootError::from)?;
-        }
+            completion.buffer.clear();
+            completion.buffer
+        };
 
-        let data_to_send = std::mem::take(&mut self.current);
-        if !data_to_send.is_empty() {
-            self.fastboot.ep_out.submit(data_to_send.into());
-        }
-
-        let max_out = self.fastboot.max_out;
-        self.current = Self::allocate_buffer(max_out);
+        std::mem::swap(&mut next, &mut self.current);
+        self.fastboot.ep_out.submit(next);
 
         Ok(())
     }
@@ -425,7 +424,7 @@ impl DataDownload<'_> {
     ///
     /// This should only be called if all data has been queued up (matching the total size)
     #[instrument(skip_all, err)]
-    pub async fn finish(mut self) -> Result<(), DownloadError> {
+    pub async fn finish(self) -> Result<(), DownloadError> {
         if self.left != 0 {
             return Err(DownloadError::IncorrectDataLength {
                 expected: self.size,
@@ -433,14 +432,15 @@ impl DataDownload<'_> {
             });
         }
 
-        let final_data = std::mem::take(&mut self.current);
-        if !final_data.is_empty() {
-            self.fastboot.ep_out.submit(final_data.into());
+        if !self.current.is_empty() {
+            self.fastboot.ep_out.submit(self.current);
         }
+
         while self.fastboot.ep_out.pending() > 0 {
             let completion = self.fastboot.ep_out.next_complete().await;
             completion.status.map_err(NusbFastBootError::from)?;
         }
+
         self.fastboot.handle_responses().await?;
         Ok(())
     }
