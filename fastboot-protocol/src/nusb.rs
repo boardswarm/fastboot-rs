@@ -1,10 +1,10 @@
-use nusb::transfer::{Buffer, In, Out};
-use nusb::transfer::Bulk;
-use std::{collections::HashMap, fmt::Display, io::Write};
-pub use nusb::{transfer::TransferError, Device, DeviceInfo, Interface};
 use nusb::descriptors::TransferType;
-use nusb::Endpoint;
+use nusb::transfer::Bulk;
 use nusb::transfer::Direction;
+use nusb::transfer::{Buffer, In, Out};
+use nusb::Endpoint;
+pub use nusb::{transfer::TransferError, Device, DeviceInfo, Interface};
+use std::{collections::HashMap, fmt::Display, io::Write};
 use thiserror::Error;
 use tracing::{info, warn};
 use tracing::{instrument, trace};
@@ -14,7 +14,9 @@ use crate::protocol::{FastBootCommand, FastBootResponseParseError};
 
 /// List fastboot devices
 pub async fn devices() -> Result<impl Iterator<Item = DeviceInfo>, nusb::Error> {
-    Ok(nusb::list_devices().await?.filter(|d| NusbFastBoot::find_fastboot_interface(d).is_some()))
+    Ok(nusb::list_devices()
+        .await?
+        .filter(|d| NusbFastBoot::find_fastboot_interface(d).is_some()))
 }
 
 /// Fastboot communication errors
@@ -47,7 +49,6 @@ pub enum NusbFastBootOpenError {
 
 /// Nusb fastboot client
 pub struct NusbFastBoot {
-    interface: Interface,
     ep_out: Endpoint<Bulk, Out>,
     max_out: usize,
     ep_in: Endpoint<Bulk, In>,
@@ -85,8 +86,7 @@ impl NusbFastBoot {
                 })?;
 
                 let (ep_in, max_in) = alt.endpoints().find_map(|end| {
-                    if end.transfer_type() == TransferType::Bulk
-                        && end.direction() == Direction::In
+                    if end.transfer_type() == TransferType::Bulk && end.direction() == Direction::In
                     {
                         Some((end.address(), end.max_packet_size()))
                     } else {
@@ -106,7 +106,6 @@ impl NusbFastBoot {
         let ep_out = interface.endpoint::<Bulk, Out>(ep_out).unwrap();
         let ep_in = interface.endpoint::<Bulk, In>(ep_in).unwrap();
         Ok(Self {
-            interface,
             ep_out,
             max_out,
             ep_in,
@@ -119,7 +118,8 @@ impl NusbFastBoot {
     #[tracing::instrument(skip_all, err)]
     pub async fn from_device(device: Device, interface: u8) -> Result<Self, NusbFastBootOpenError> {
         let interface = device
-            .claim_interface(interface).await
+            .claim_interface(interface)
+            .await
             .map_err(NusbFastBootOpenError::Interface)?;
         Self::from_interface(interface)
     }
@@ -131,7 +131,7 @@ impl NusbFastBoot {
         let interface =
             Self::find_fastboot_interface(info).ok_or(NusbFastBootOpenError::MissingInterface)?;
         let device = info.open().await.map_err(NusbFastBootOpenError::Device)?;
-        Ok(Self::from_device(device, interface).await?)
+        Self::from_device(device, interface).await
     }
 
     #[tracing::instrument(skip_all, err)]
@@ -143,7 +143,7 @@ impl NusbFastBoot {
 
     async fn send_command<S: Display>(
         &mut self,
-        cmd: FastBootCommand<S>
+        cmd: FastBootCommand<S>,
     ) -> Result<(), NusbFastBootError> {
         let mut out = vec![];
         // Only fails if memory allocation fails
