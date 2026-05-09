@@ -10,11 +10,11 @@ fn bytes_slice_null(bytes: &[u8]) -> &[u8] {
 }
 
 /// Parses a u32 from a string that can be either hex (0x prefixed) or decimal.
-pub fn parse_u32_hex_or_dec(s: &str) -> Result<u32, ParseIntError> {
+pub fn parse_u32(s: &str) -> Result<u32, ParseIntError> {
     if s.starts_with("0x") {
         parse_u32_hex(s)
     } else {
-        u32::from_str_radix(s, 10)
+        s.parse()
     }
 }
 
@@ -148,6 +148,15 @@ mod test {
     use super::*;
 
     #[test]
+    fn parse_valid_u32() {
+        let hex = parse_u32("0x123456").unwrap();
+        assert_eq!(0x123456, hex);
+
+        let hex = parse_u32("0012345").unwrap();
+        assert_eq!(12345, hex);
+    }
+
+    #[test]
     fn parse_valid_u32_hex() {
         let hex = parse_u32_hex("0x123456").unwrap();
         assert_eq!(0x123456, hex);
@@ -166,6 +175,12 @@ mod test {
 
         let hex = parse_u64_hex("0x0000000134b72400").unwrap();
         assert_eq!(0x134b72400, hex);
+    }
+
+    #[test]
+    fn parse_invalid_u32() {
+        parse_u32("12abcd").unwrap_err();
+        parse_u32("hello").unwrap_err();
     }
 
     #[test]

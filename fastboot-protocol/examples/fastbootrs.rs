@@ -9,8 +9,8 @@ use android_sparse_image::{
 use anyhow::{bail, Context};
 use clap::Parser;
 use fastboot_protocol::nusb::NusbFastBoot;
+use fastboot_protocol::protocol::parse_u32;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
-use fastboot_protocol::protocol::parse_u32_hex_or_dec;
 
 #[derive(Parser)]
 enum Opts {
@@ -51,7 +51,7 @@ where
 
 async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Result<()> {
     let max_download = fb.get_var("max-download-size").await?;
-    let max_download = parse_u32_hex_or_dec(&max_download)
+    let max_download = parse_u32(&max_download)
         .with_context(|| anyhow::anyhow!("Failed to parse max download size: {max_download}"))?;
     println!("Max download size: {max_download}");
 
