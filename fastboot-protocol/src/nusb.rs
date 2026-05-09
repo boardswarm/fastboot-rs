@@ -103,8 +103,12 @@ impl NusbFastBoot {
             ep_in,
             max_in
         );
-        let ep_out = interface.endpoint::<Bulk, Out>(ep_out).unwrap();
-        let ep_in = interface.endpoint::<Bulk, In>(ep_in).unwrap();
+        let ep_out = interface
+            .endpoint::<Bulk, Out>(ep_out)
+            .map_err(NusbFastBootOpenError::Interface)?;
+        let ep_in = interface
+            .endpoint::<Bulk, In>(ep_in)
+            .map_err(NusbFastBootOpenError::Interface)?;
         Ok(Self {
             ep_out,
             max_out,
