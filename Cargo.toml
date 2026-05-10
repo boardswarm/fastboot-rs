@@ -1,5 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-	"android-sparse-image"
-, "fastboot-protocol"]
+  "android-sparse-image",
+  "fastboot-protocol"
+]
+
+[workspace.package]
+rust-version = "1.85"
+edition = "2021"
