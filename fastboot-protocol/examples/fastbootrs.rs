@@ -49,6 +49,32 @@ where
     Ok(())
 }
 
+// Exactly fill the buffer; If EOF is reached before the buffer is full fill the remainder with 0.
+// This is useful in particular when flashing a big file that's not aligned to the android sparse
+// image block size
+// size (4096 bytes)
+async fn read_exact_padded<R: AsyncRead + Unpin>(
+    input: &mut R,
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    let total = buf.len();
+    let mut offset = 0;
+    while offset < total {
+        match input.read(&mut buf[offset..]).await {
+            Ok(0) => {
+                /* EOF, fill the remainder with 0 */
+                buf[offset..].fill(0);
+                break;
+            }
+            Ok(read) => offset += read,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(total)
+}
+
 async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Result<()> {
     let max_download = fb.get_var("max-download-size").await?;
     let max_download = parse_u32(&max_download)
@@ -105,8 +131,8 @@ async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Resu
             let mut left = chunk.size;
             while left > 0 {
                 let buf = sender.get_mut_data(left).await?;
-                left -= f
-                    .read_exact(buf)
+
+                left -= read_exact_padded(&mut f, buf)
                     .await
                     .context("Failed to read from file")?;
             }
