@@ -9,6 +9,7 @@ use android_sparse_image::{
 use anyhow::{bail, Context};
 use clap::Parser;
 use fastboot_protocol::nusb::NusbFastBoot;
+use fastboot_protocol::protocol::parse_u32;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
 
 #[derive(Parser)]
@@ -50,7 +51,7 @@ where
 
 async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Result<()> {
     let max_download = fb.get_var("max-download-size").await?;
-    let max_download = fastboot_protocol::protocol::parse_u32_hex(&max_download)
+    let max_download = parse_u32(&max_download)
         .with_context(|| anyhow::anyhow!("Failed to parse max download size: {max_download}"))?;
     println!("Max download size: {max_download}");
 
@@ -123,20 +124,20 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let opts = Opts::parse();
 
-    let mut devices = fastboot_protocol::nusb::devices()?;
+    let mut devices = fastboot_protocol::nusb::devices().await?;
     let info = devices
         .next()
         .ok_or_else(|| anyhow::anyhow!("No Device found"))?;
 
     println!(
         "Using Fastboot device: {}:{} M: {} P: {}",
-        info.bus_number(),
+        info.bus_id(),
         info.device_address(),
         info.manufacturer_string().unwrap_or_default(),
         info.product_string().unwrap_or_default()
     );
 
-    let mut fb = NusbFastBoot::from_info(&info)?;
+    let mut fb = NusbFastBoot::from_info(&info).await?;
 
     match opts {
         Opts::GetVar { var } => {

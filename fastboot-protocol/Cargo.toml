@@ -1,20 +1,24 @@
 [package]
 name = "fastboot-protocol"
-version = "0.3.1"
-edition = "2021"
+version = "0.4.0-rc0"
 authors = ["Sjoerd Simons <sjoerd@collabora.com>"]
 license = "MIT OR Apache-2.0"
 description = "Fastboot protocol implementation"
 readme = "README.md"
 repository = "https://github.com/boardswarm/fastboot-rs"
+edition.workspace = true
+rust-version.workspace = true
 
 
 [dependencies]
 bytes = "1.11.0"
 futures = "0.3.31"
-nusb = "0.1.11"
+nusb = { version = "0.2.3" }
 thiserror = "2.0.3"
 tracing = "0.1.40"
+
+[features]
+default = ["nusb/tokio"]
 
 [dev-dependencies]
 android-sparse-image = { path = "../android-sparse-image", version = "0.1.3" }

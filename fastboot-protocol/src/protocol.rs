@@ -9,6 +9,15 @@ fn bytes_slice_null(bytes: &[u8]) -> &[u8] {
     }
 }
 
+/// Parses a u32 from a string that can be either hex (0x prefixed) or decimal.
+pub fn parse_u32(s: &str) -> Result<u32, ParseIntError> {
+    if s.starts_with("0x") {
+        parse_u32_hex(s)
+    } else {
+        s.parse()
+    }
+}
+
 /// Parse a hexadecimal 0x prefixed string e.g. 0x1234 into a u32
 pub fn parse_u32_hex(hex: &str) -> Result<u32, ParseIntError> {
     // Can't create a custom ParseIntError; so if there is no 0x prefix, work around it providing
@@ -46,6 +55,8 @@ pub enum FastBootCommand<S> {
     Reboot,
     /// Reboot into the bootloader
     RebootBootloader,
+    /// Reboot into specific mode
+    RebootTo(S),
     /// Power off the device
     Powerdown,
 }
@@ -62,6 +73,7 @@ impl<S: Display> Display for FastBootCommand<S> {
             FastBootCommand::Continue => write!(f, "continue"),
             FastBootCommand::Reboot => write!(f, "reboot"),
             FastBootCommand::RebootBootloader => write!(f, "reboot-bootloader"),
+            FastBootCommand::RebootTo(mode) => write!(f, "reboot-{mode}"),
             FastBootCommand::Powerdown => write!(f, "powerdown"),
         }
     }
@@ -136,6 +148,15 @@ mod test {
     use super::*;
 
     #[test]
+    fn parse_valid_u32() {
+        let hex = parse_u32("0x123456").unwrap();
+        assert_eq!(0x123456, hex);
+
+        let hex = parse_u32("0012345").unwrap();
+        assert_eq!(12345, hex);
+    }
+
+    #[test]
     fn parse_valid_u32_hex() {
         let hex = parse_u32_hex("0x123456").unwrap();
         assert_eq!(0x123456, hex);
@@ -154,6 +175,12 @@ mod test {
 
         let hex = parse_u64_hex("0x0000000134b72400").unwrap();
         assert_eq!(0x134b72400, hex);
+    }
+
+    #[test]
+    fn parse_invalid_u32() {
+        parse_u32("12abcd").unwrap_err();
+        parse_u32("hello").unwrap_err();
     }
 
     #[test]
