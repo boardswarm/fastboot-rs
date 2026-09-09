@@ -13,7 +13,7 @@ rust-version.workspace = true
 [dependencies]
 bytes = "1.11.0"
 futures = "0.3.31"
-nusb = { version = "0.2.3" }
+nusb = { version = "0.2.7" }
 thiserror = "2.0.3"
 tracing = "0.1.40"
 
