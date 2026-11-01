@@ -112,7 +112,7 @@ async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Resu
                     .context("Seeking back to the start")?;
                 return flash_raw(fb, target, f, file_size as u32).await;
             }
-            android_sparse_image::split::split_raw(file_size as usize, max_download)?
+            android_sparse_image::split::split_raw(file_size, max_download)?
         }
         Err(e) => bail!("Failed to parse sparse image: {e}"),
     };
@@ -125,7 +125,7 @@ async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Resu
         sender.extend_from_slice(&split.header.to_bytes()).await?;
         for chunk in &split.chunks {
             sender.extend_from_slice(&chunk.header.to_bytes()).await?;
-            f.seek(SeekFrom::Start(chunk.offset as u64))
+            f.seek(SeekFrom::Start(chunk.offset))
                 .await
                 .context("Failed to seek input file")?;
             let mut left = chunk.size;
