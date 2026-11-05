@@ -38,7 +38,7 @@ fn inspect(img: &Path) -> anyhow::Result<()> {
         header.block_size,
         header.checksum
     );
-    let mut offset: usize = 0;
+    let mut offset: u64 = 0;
     for index in 0..header.chunks {
         let mut chunk_bytes = ChunkHeaderBytes::default();
         file.read_exact(&mut chunk_bytes)?;
@@ -90,7 +90,7 @@ fn expand(img: &Path, out: &Path) -> anyhow::Result<()> {
         let out_size = chunk.out_size(&header);
         match chunk.chunk_type {
             android_sparse_image::ChunkType::Raw => {
-                let mut raw = (&mut file).take(out_size.try_into().unwrap());
+                let mut raw = (&mut file).take(out_size);
                 copy(&mut raw, &mut output)?;
             }
             android_sparse_image::ChunkType::Fill => {
@@ -141,7 +141,7 @@ fn split(img: &Path, size: u32, out: &Path) -> anyhow::Result<()> {
 
             file.seek(SeekFrom::Start(chunk.offset))
                 .context("Failed to seek input file")?;
-            std::io::copy(&mut (&mut file).take(chunk.size as u64), &mut out)?;
+            std::io::copy(&mut (&mut file).take(chunk.size), &mut out)?;
         }
     }
 

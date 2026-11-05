@@ -110,8 +110,8 @@ impl FileHeader {
         bytes
     }
 
-    pub fn total_size(&self) -> usize {
-        self.blocks as usize * self.block_size as usize
+    pub fn total_size(&self) -> u64 {
+        self.blocks as u64 * self.block_size as u64
     }
 }
 
@@ -209,13 +209,13 @@ impl ChunkHeader {
     }
 
     /// Resulting size of this chunk in the output
-    pub fn out_size(&self, header: &FileHeader) -> usize {
-        self.chunk_size as usize * header.block_size as usize
+    pub fn out_size(&self, header: &FileHeader) -> u64 {
+        self.chunk_size as u64 * header.block_size as u64
     }
 
     /// Data bytes after the header
-    pub fn data_size(&self) -> usize {
-        (self.total_size as usize).saturating_sub(CHUNK_HEADER_BYTES_LEN)
+    pub fn data_size(&self) -> u64 {
+        (self.total_size as u64).saturating_sub(CHUNK_HEADER_BYTES_LEN as u64)
     }
 }
 

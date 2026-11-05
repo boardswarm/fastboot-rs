@@ -130,11 +130,13 @@ async fn flash(fb: &mut NusbFastBoot, target: &str, file: &Path) -> anyhow::Resu
                 .context("Failed to seek input file")?;
             let mut left = chunk.size;
             while left > 0 {
-                let buf = sender.get_mut_data(left).await?;
+                let buf = sender
+                    .get_mut_data(left.try_into().unwrap_or(usize::MAX))
+                    .await?;
 
                 left -= read_exact_padded(&mut f, buf)
                     .await
-                    .context("Failed to read from file")?;
+                    .context("Failed to read from file")? as u64;
             }
         }
         sender.finish().await?;

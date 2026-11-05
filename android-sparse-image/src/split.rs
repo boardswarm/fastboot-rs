@@ -14,7 +14,7 @@ pub struct SplitChunk {
     /// Offset in the input file for the chunk data
     pub offset: u64,
     /// Amount of data to be copied from the input file (in bytes)
-    pub size: usize,
+    pub size: u64,
 }
 
 /// A definition of a split sparse image; When writing out or downloading to a device the  (file)
@@ -43,13 +43,13 @@ impl Split {
     }
 
     /// Total size of the sparse image that would be generated when writing out the split
-    pub fn sparse_size(&self) -> usize {
-        FILE_HEADER_BYTES_LEN
+    pub fn sparse_size(&self) -> u64 {
+        FILE_HEADER_BYTES_LEN as u64
             + self
                 .chunks
                 .iter()
-                .map(|c| c.header.total_size as usize)
-                .sum::<usize>()
+                .map(|c| u64::from(c.header.total_size))
+                .sum::<u64>()
     }
 }
 
@@ -188,7 +188,7 @@ pub fn split_image(
             }
             Ok((
                 block_offset + chunk.chunk_size,
-                image_offset + chunk.total_size as u64,
+                image_offset + u64::from(chunk.total_size),
                 builder,
                 splits,
             ))
@@ -436,7 +436,7 @@ mod test {
                         total_size: 2 * DEFAULT_BLOCKSIZE + CHUNK_HEADER_BYTES_LEN as u32
                     },
                     offset: 2 * i as u64 * DEFAULT_BLOCKSIZE as u64,
-                    size: 2 * DEFAULT_BLOCKSIZE as usize
+                    size: 2 * DEFAULT_BLOCKSIZE as u64
                 },
                 "chunk {i}"
             );
