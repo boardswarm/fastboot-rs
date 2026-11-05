@@ -139,7 +139,7 @@ fn split(img: &Path, size: u32, out: &Path) -> anyhow::Result<()> {
         for chunk in &split.chunks {
             out.write_all(&chunk.header.to_bytes())?;
 
-            file.seek(SeekFrom::Start(chunk.offset as u64))
+            file.seek(SeekFrom::Start(chunk.offset))
                 .context("Failed to seek input file")?;
             std::io::copy(&mut (&mut file).take(chunk.size as u64), &mut out)?;
         }
