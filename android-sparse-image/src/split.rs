@@ -457,6 +457,94 @@ mod test {
         assert_eq!(splits.len(), expected.len());
     }
 
+    // Test a split where the splits are so small it only fits a few chunk headers
+    #[test]
+    fn split_tiny_blocks() {
+        let header = FileHeader {
+            block_size: 4,
+            blocks: 16,
+            chunks: 2,
+            checksum: 0,
+        };
+        let chunks = [
+            ChunkHeader::new_fill(8),
+            ChunkHeader::new_fill(8),
+            ChunkHeader::new_fill(8),
+            ChunkHeader::new_fill(8),
+        ];
+        let expected = [
+            Split {
+                header: FileHeader {
+                    block_size: 4,
+                    blocks: 16,
+                    chunks: 2,
+                    checksum: 0,
+                },
+                chunks: vec![
+                    SplitChunk {
+                        header: ChunkHeader::new_fill(8),
+                        offset: (FILE_HEADER_BYTES_LEN + CHUNK_HEADER_BYTES_LEN) as u64,
+                        size: 4,
+                    },
+                    SplitChunk {
+                        header: ChunkHeader::new_fill(8),
+                        offset: (FILE_HEADER_BYTES_LEN + CHUNK_HEADER_BYTES_LEN * 2 + 4) as u64,
+                        size: 4,
+                    },
+                ],
+            },
+            Split {
+                header: FileHeader {
+                    block_size: 4,
+                    blocks: 24,
+                    chunks: 2,
+                    checksum: 0,
+                },
+                chunks: vec![
+                    SplitChunk {
+                        header: ChunkHeader::new_dontcare(16),
+                        offset: 0,
+                        size: 0,
+                    },
+                    SplitChunk {
+                        header: ChunkHeader::new_fill(8),
+                        offset: (FILE_HEADER_BYTES_LEN + CHUNK_HEADER_BYTES_LEN * 3 + 8) as u64,
+                        size: 4,
+                    },
+                ],
+            },
+            Split {
+                header: FileHeader {
+                    block_size: 4,
+                    blocks: 32,
+                    chunks: 2,
+                    checksum: 0,
+                },
+                chunks: vec![
+                    SplitChunk {
+                        header: ChunkHeader::new_dontcare(24),
+                        offset: 0,
+                        size: 0,
+                    },
+                    SplitChunk {
+                        header: ChunkHeader::new_fill(8),
+                        offset: (FILE_HEADER_BYTES_LEN + CHUNK_HEADER_BYTES_LEN * 4 + 12) as u64,
+                        size: 4,
+                    },
+                ],
+            },
+        ];
+
+        // Minimal size is a file header (28), 2 chunks headers (12 each) and 1 block (16)
+        // A fill is a chunk header + 4 bytes, with 68 bytes for the output size that means, each
+        // file can have at most 2 fills or a  dontcare + fill.
+        let splits = split_image(&header, &chunks, 68).unwrap();
+        for (i, (split, expected)) in splits.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(split, expected, "split {i} mismatch");
+        }
+        assert_eq!(splits.len(), expected.len());
+    }
+
     #[test]
     fn test_split_raw() {
         let splits = split_raw(8 * DEFAULT_BLOCKSIZE as u64, 3 * DEFAULT_BLOCKSIZE as u64).unwrap();
