@@ -19,7 +19,7 @@ enum Opts {
     /// split content of <img> to fit maximum download size
     Split {
         img: PathBuf,
-        size: u32,
+        size: u64,
         out: PathBuf,
     },
 }
@@ -112,7 +112,7 @@ fn expand(img: &Path, out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn split(img: &Path, size: u32, out: &Path) -> anyhow::Result<()> {
+fn split(img: &Path, size: u64, out: &Path) -> anyhow::Result<()> {
     let mut file = std::fs::File::open(img)?;
     let mut header_bytes: FileHeaderBytes = [0; FILE_HEADER_BYTES_LEN];
     file.read_exact(&mut header_bytes)?;
