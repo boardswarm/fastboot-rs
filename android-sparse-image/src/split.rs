@@ -130,8 +130,8 @@ impl SplitBuilder {
 
 #[derive(Debug, Error)]
 pub enum SplitError {
-    #[error("Size is too small to fit chunks")]
-    TooSmall,
+    #[error("Output size is too small to fit chunks")]
+    OutputTooSmall,
     #[error("Input size is too big to describe")]
     InputTooBig,
     #[error("Block size is too big")]
@@ -146,7 +146,7 @@ fn check_output_size(size: u64, block_size: NonZeroU32) -> Result<(), SplitError
     if size
         < FILE_HEADER_BYTES_LEN as u64 + 2 * CHUNK_HEADER_BYTES_LEN as u64 + block_size.get() as u64
     {
-        return Err(SplitError::TooSmall);
+        return Err(SplitError::OutputTooSmall);
     }
     Ok(())
 }
@@ -194,7 +194,7 @@ pub fn split_image(
                     splits.push(builder.finish());
                     builder = SplitBuilder::new(header.block_size, size, block_offset);
                     if !builder.try_add_chunk(chunk, image_offset) {
-                        return Err(SplitError::TooSmall);
+                        return Err(SplitError::OutputTooSmall);
                     }
                 }
             }
