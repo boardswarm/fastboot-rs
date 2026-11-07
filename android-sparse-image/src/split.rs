@@ -134,6 +134,8 @@ pub enum SplitError {
     TooSmall,
     #[error("Input size is too big to describe")]
     InputTooBig,
+    #[error("Block size is too big")]
+    BlocksizeTooBig,
 }
 
 fn check_output_size(size: u64, block_size: NonZeroU32) -> Result<(), SplitError> {
@@ -157,6 +159,9 @@ pub fn split_image(
     size: u64,
 ) -> Result<Vec<Split>, SplitError> {
     check_output_size(size, header.block_size)?;
+    if ChunkHeader::max_raw_blocks(header.block_size) == 0 {
+        return Err(SplitError::BlocksizeTooBig);
+    }
     let (_, _, builder, mut splits) = chunks.iter().try_fold(
         (
             // output offset in blocks
