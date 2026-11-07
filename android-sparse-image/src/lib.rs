@@ -133,6 +133,13 @@ pub enum ChunkType {
 /// Byte array which fits a chunk header
 pub type ChunkHeaderBytes = [u8; CHUNK_HEADER_BYTES_LEN];
 
+/// Chunk header creation errors
+#[derive(Clone, Debug, Error)]
+pub enum ChunkHeaderError {
+    #[error("Total size of chunk is too big")]
+    TooBig,
+}
+
 /// Header of a chunk
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkHeader {
@@ -154,16 +161,40 @@ impl ChunkHeader {
         }
     }
 
+    /// Calculate the maximum amount of blocks fitting a raw header
+    pub fn max_raw_blocks(block_size: u32) -> u32 {
+        (u32::MAX - CHUNK_HEADER_BYTES_LEN as u32)
+            .checked_div(block_size)
+            .unwrap_or(u32::MAX)
+    }
+
     /// Create a new raw header for a given amount in blocks for block_size
     ///
-    /// The actual data should follow this header
-    pub fn new_raw(blocks: u32, block_size: u32) -> Self {
-        ChunkHeader {
-            chunk_type: ChunkType::Raw,
-            chunk_size: blocks,
-            total_size: (CHUNK_HEADER_BYTES_LEN as u32)
-                .saturating_add(blocks.saturating_mul(block_size)),
+    /// The actual data should follow this header. Returns an error if the amount of blocks is too
+    /// big for the chunk header. Prefer using [ChunkHeader::new_raw_fill]
+    pub fn new_raw(blocks: u32, block_size: u32) -> Result<Self, ChunkHeaderError> {
+        let (h, used) = Self::new_raw_fill(blocks, block_size);
+        if used != blocks {
+            Err(ChunkHeaderError::TooBig)
+        } else {
+            Ok(h)
         }
+    }
+
+    /// Create a new raw header using as much of the blocks as possible
+    ///
+    /// The actual data should follow this header. Returns both the chunk header as well as the
+    /// amount of blocks used, which can be less than the passed blocks
+    pub fn new_raw_fill(blocks: u32, block_size: u32) -> (Self, u32) {
+        let chunk_size = blocks.min(Self::max_raw_blocks(block_size));
+        (
+            ChunkHeader {
+                chunk_type: ChunkType::Raw,
+                chunk_size,
+                total_size: CHUNK_HEADER_BYTES_LEN as u32 + chunk_size * block_size,
+            },
+            chunk_size,
+        )
     }
 
     /// Create a new fill header for a given amount of blocks to be filled
