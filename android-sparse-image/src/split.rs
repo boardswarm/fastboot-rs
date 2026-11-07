@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use crate::{
     ChunkHeader, ChunkType, FileHeader, CHUNK_HEADER_BYTES_LEN, DEFAULT_BLOCKSIZE,
     FILE_HEADER_BYTES_LEN,
@@ -28,7 +30,7 @@ pub struct Split {
 }
 
 impl Split {
-    fn from_chunks(chunks: Vec<SplitChunk>, block_size: u32) -> Self {
+    fn from_chunks(chunks: Vec<SplitChunk>, block_size: NonZeroU32) -> Self {
         let n_chunks = chunks.len() as u32;
         let blocks = chunks.iter().map(|c| c.header.chunk_size).sum();
 
@@ -56,12 +58,12 @@ impl Split {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SplitBuilder {
     space: u64,
-    block_size: u32,
+    block_size: NonZeroU32,
     chunks: Vec<SplitChunk>,
 }
 
 impl SplitBuilder {
-    fn new(block_size: u32, mut space: u64, blocks_offset: u32) -> Self {
+    fn new(block_size: NonZeroU32, mut space: u64, blocks_offset: u32) -> Self {
         space -= FILE_HEADER_BYTES_LEN as u64;
         let chunks = if blocks_offset == 0 {
             vec![]
@@ -100,7 +102,7 @@ impl SplitBuilder {
     /// Add as much raw data as possible, returning the blocks taken up)
     fn add_raw(&mut self, image_offset: u64, blocks: u32) -> u32 {
         let left = self.space.saturating_sub(CHUNK_HEADER_BYTES_LEN as u64);
-        let blocks_left = (left / u64::from(self.block_size))
+        let blocks_left = (left / u64::from(self.block_size.get()))
             .try_into()
             .unwrap_or(u32::MAX);
 
@@ -134,12 +136,14 @@ pub enum SplitError {
     InputTooBig,
 }
 
-fn check_output_size(size: u64, block_size: u32) -> Result<(), SplitError> {
+fn check_output_size(size: u64, block_size: NonZeroU32) -> Result<(), SplitError> {
     // At the very list the size we split into should be enough to have:
     // * A file header
     // * A Chunk header for an initial don't care block
     // * A Chunk header for a raw block and a single block
-    if size < FILE_HEADER_BYTES_LEN as u64 + 2 * CHUNK_HEADER_BYTES_LEN as u64 + block_size as u64 {
+    if size
+        < FILE_HEADER_BYTES_LEN as u64 + 2 * CHUNK_HEADER_BYTES_LEN as u64 + block_size.get() as u64
+    {
         return Err(SplitError::TooSmall);
     }
     Ok(())
@@ -170,7 +174,7 @@ pub fn split_image(
                     let mut blocks = 0;
                     while blocks < chunk.chunk_size {
                         let consumed = builder.add_raw(
-                            image_offset + (blocks as u64 * header.block_size as u64),
+                            image_offset + (blocks as u64 * header.block_size.get() as u64),
                             chunk.chunk_size - blocks,
                         );
                         blocks += consumed;
@@ -207,7 +211,7 @@ pub fn split_image(
 pub fn split_raw(raw_size: u64, size: u64) -> Result<Vec<Split>, SplitError> {
     check_output_size(size, DEFAULT_BLOCKSIZE)?;
     let raw_blocks: u32 = raw_size
-        .div_ceil(DEFAULT_BLOCKSIZE as u64)
+        .div_ceil(DEFAULT_BLOCKSIZE.get() as u64)
         .try_into()
         .or(Err(SplitError::InputTooBig))?;
 
@@ -217,7 +221,7 @@ pub fn split_raw(raw_size: u64, size: u64) -> Result<Vec<Split>, SplitError> {
     let mut builder = SplitBuilder::new(DEFAULT_BLOCKSIZE, size, block_offset);
     while raw_blocks > block_offset {
         let consumed = builder.add_raw(
-            block_offset as u64 * DEFAULT_BLOCKSIZE as u64,
+            block_offset as u64 * DEFAULT_BLOCKSIZE.get() as u64,
             raw_blocks - block_offset,
         );
         block_offset += consumed;
@@ -237,14 +241,14 @@ mod test {
     #[test]
     fn split_simple() {
         let header = FileHeader {
-            block_size: 4096,
+            block_size: DEFAULT_BLOCKSIZE,
             blocks: 1024,
             chunks: 2,
             checksum: 0,
         };
         let chunks = [
             ChunkHeader::new_fill(8),
-            ChunkHeader::new_raw(1024 - 8, 4096).unwrap(),
+            ChunkHeader::new_raw(1024 - 8, DEFAULT_BLOCKSIZE).unwrap(),
         ];
 
         let split = split_image(&header, &chunks, 1024 * 4096).unwrap();
@@ -274,21 +278,21 @@ mod test {
     #[test]
     fn split_multiple() {
         let header = FileHeader {
-            block_size: 4096,
+            block_size: DEFAULT_BLOCKSIZE,
             blocks: 2048,
             chunks: 2,
             checksum: 0,
         };
         let chunks = [
             ChunkHeader::new_fill(8),
-            ChunkHeader::new_raw(1024 - 8, 4096).unwrap(),
-            ChunkHeader::new_raw(1024 - 8, 4096).unwrap(),
+            ChunkHeader::new_raw(1024 - 8, DEFAULT_BLOCKSIZE).unwrap(),
+            ChunkHeader::new_raw(1024 - 8, DEFAULT_BLOCKSIZE).unwrap(),
             ChunkHeader::new_fill(8),
         ];
         let expected = [
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: 519,
                     chunks: 2,
                     checksum: 0,
@@ -300,7 +304,7 @@ mod test {
                         size: 4,
                     },
                     SplitChunk {
-                        header: ChunkHeader::new_raw(511, 4096).unwrap(),
+                        header: ChunkHeader::new_raw(511, DEFAULT_BLOCKSIZE).unwrap(),
                         offset: (FILE_HEADER_BYTES_LEN + 2 * CHUNK_HEADER_BYTES_LEN + 4) as u64,
                         size: 511 * 4096,
                     },
@@ -308,7 +312,7 @@ mod test {
             },
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: 519 + 511,
                     chunks: 3,
                     checksum: 0,
@@ -321,7 +325,7 @@ mod test {
                     },
                     // Finalizing first raw block, 1024 - 519 left: 505
                     SplitChunk {
-                        header: ChunkHeader::new_raw(505, 4096).unwrap(),
+                        header: ChunkHeader::new_raw(505, DEFAULT_BLOCKSIZE).unwrap(),
                         offset: (FILE_HEADER_BYTES_LEN
                             + 2 * CHUNK_HEADER_BYTES_LEN
                             + 4
@@ -330,7 +334,7 @@ mod test {
                     },
                     // First part of the second raw chunk, 511 - 505 left: 6
                     SplitChunk {
-                        header: ChunkHeader::new_raw(6, 4096).unwrap(),
+                        header: ChunkHeader::new_raw(6, DEFAULT_BLOCKSIZE).unwrap(),
                         offset: (FILE_HEADER_BYTES_LEN
                             + 3 * CHUNK_HEADER_BYTES_LEN
                             + 4
@@ -341,7 +345,7 @@ mod test {
             },
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: 519 + 511 + 511,
                     chunks: 2,
                     checksum: 0,
@@ -354,7 +358,7 @@ mod test {
                     },
                     // Second part of the second raw chunk, 6 were in the last chunk
                     SplitChunk {
-                        header: ChunkHeader::new_raw(511, 4096).unwrap(),
+                        header: ChunkHeader::new_raw(511, DEFAULT_BLOCKSIZE).unwrap(),
                         offset: (FILE_HEADER_BYTES_LEN
                             + 3 * CHUNK_HEADER_BYTES_LEN
                             + 4
@@ -366,7 +370,7 @@ mod test {
             },
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: 2048,
                     chunks: 3,
                     checksum: 0,
@@ -380,7 +384,7 @@ mod test {
                     // Final part of the second raw chunk, 6 + 511 already accounted for, so 499
                     // left of 1016
                     SplitChunk {
-                        header: ChunkHeader::new_raw(499, 4096).unwrap(),
+                        header: ChunkHeader::new_raw(499, DEFAULT_BLOCKSIZE).unwrap(),
                         offset: (FILE_HEADER_BYTES_LEN
                             + 3 * CHUNK_HEADER_BYTES_LEN
                             + 4
@@ -431,7 +435,7 @@ mod test {
             vec![SplitChunk {
                 header: chunks[0].clone(),
                 offset: (FILE_HEADER_BYTES_LEN + CHUNK_HEADER_BYTES_LEN) as u64,
-                size: DEFAULT_BLOCKSIZE as u64,
+                size: DEFAULT_BLOCKSIZE.get() as u64,
             }]
         );
     }
@@ -440,32 +444,32 @@ mod test {
     #[test]
     fn split_edge() {
         let header = FileHeader {
-            block_size: 4096,
+            block_size: DEFAULT_BLOCKSIZE,
             blocks: 520,
             chunks: 2,
             checksum: 0,
         };
         let chunks = [
-            ChunkHeader::new_raw(511, 4096).unwrap(),
-            ChunkHeader::new_raw(1, 4096).unwrap(),
+            ChunkHeader::new_raw(511, DEFAULT_BLOCKSIZE).unwrap(),
+            ChunkHeader::new_raw(1, DEFAULT_BLOCKSIZE).unwrap(),
         ];
         let expected = [
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: 511,
                     chunks: 1,
                     checksum: 0,
                 },
                 chunks: vec![SplitChunk {
-                    header: ChunkHeader::new_raw(511, 4096).unwrap(),
+                    header: ChunkHeader::new_raw(511, DEFAULT_BLOCKSIZE).unwrap(),
                     offset: (FILE_HEADER_BYTES_LEN + CHUNK_HEADER_BYTES_LEN) as u64,
-                    size: 511 * 4096,
+                    size: 511 * DEFAULT_BLOCKSIZE.get() as u64,
                 }],
             },
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: 511 + 1,
                     chunks: 2,
                     checksum: 0,
@@ -477,7 +481,7 @@ mod test {
                         size: 0,
                     },
                     SplitChunk {
-                        header: ChunkHeader::new_raw(1, 4096).unwrap(),
+                        header: ChunkHeader::new_raw(1, DEFAULT_BLOCKSIZE).unwrap(),
                         offset: (FILE_HEADER_BYTES_LEN + 2 * CHUNK_HEADER_BYTES_LEN + 511 * 4096)
                             as u64,
                         size: 4096,
@@ -497,7 +501,7 @@ mod test {
     #[test]
     fn split_tiny_blocks() {
         let header = FileHeader {
-            block_size: 4,
+            block_size: NonZeroU32::new(4).unwrap(),
             blocks: 16,
             chunks: 2,
             checksum: 0,
@@ -511,7 +515,7 @@ mod test {
         let expected = [
             Split {
                 header: FileHeader {
-                    block_size: 4,
+                    block_size: NonZeroU32::new(4).unwrap(),
                     blocks: 16,
                     chunks: 2,
                     checksum: 0,
@@ -531,7 +535,7 @@ mod test {
             },
             Split {
                 header: FileHeader {
-                    block_size: 4,
+                    block_size: NonZeroU32::new(4).unwrap(),
                     blocks: 24,
                     chunks: 2,
                     checksum: 0,
@@ -551,7 +555,7 @@ mod test {
             },
             Split {
                 header: FileHeader {
-                    block_size: 4,
+                    block_size: NonZeroU32::new(4).unwrap(),
                     blocks: 32,
                     chunks: 2,
                     checksum: 0,
@@ -583,10 +587,14 @@ mod test {
 
     #[test]
     fn test_split_raw() {
-        let splits = split_raw(8 * DEFAULT_BLOCKSIZE as u64, 3 * DEFAULT_BLOCKSIZE as u64).unwrap();
+        let splits = split_raw(
+            8 * DEFAULT_BLOCKSIZE.get() as u64,
+            3 * DEFAULT_BLOCKSIZE.get() as u64,
+        )
+        .unwrap();
         assert_eq!(splits.len(), 4, "Incorrect parts: {splits:?}");
         for (i, split) in splits.iter().enumerate() {
-            assert_eq!(split.header.block_size, 4096);
+            assert_eq!(split.header.block_size, DEFAULT_BLOCKSIZE);
             assert_eq!(split.header.checksum, 0);
             let raw = if i == 0 {
                 assert_eq!(split.header.chunks, 1);
@@ -616,10 +624,10 @@ mod test {
                     header: ChunkHeader {
                         chunk_type: ChunkType::Raw,
                         chunk_size: 2,
-                        total_size: 2 * DEFAULT_BLOCKSIZE + CHUNK_HEADER_BYTES_LEN as u32
+                        total_size: 2 * DEFAULT_BLOCKSIZE.get() + CHUNK_HEADER_BYTES_LEN as u32
                     },
-                    offset: 2 * i as u64 * DEFAULT_BLOCKSIZE as u64,
-                    size: 2 * DEFAULT_BLOCKSIZE as u64
+                    offset: 2 * i as u64 * DEFAULT_BLOCKSIZE.get() as u64,
+                    size: 2 * DEFAULT_BLOCKSIZE.get() as u64
                 },
                 "chunk {i}"
             );
@@ -659,11 +667,12 @@ mod test {
             - FILE_HEADER_BYTES_LEN as u64
             // chunk header for the two first blocks
             - CHUNK_HEADER_BYTES_LEN as u64 * 2
-            - (expected_first_blocks as u64 * DEFAULT_BLOCKSIZE as u64))
-            / DEFAULT_BLOCKSIZE as u64) as u32;
+            - (expected_first_blocks as u64 * DEFAULT_BLOCKSIZE.get() as u64))
+            / DEFAULT_BLOCKSIZE.get() as u64) as u32;
         let expected_third_blocks = (raw_size
-            - ((expected_first_blocks + expected_second_blocks) as u64 * DEFAULT_BLOCKSIZE as u64))
-            .div_ceil(DEFAULT_BLOCKSIZE as u64) as u32;
+            - ((expected_first_blocks + expected_second_blocks) as u64
+                * DEFAULT_BLOCKSIZE.get() as u64))
+            .div_ceil(DEFAULT_BLOCKSIZE.get() as u64) as u32;
         let first_file_blocks = expected_first_blocks + expected_second_blocks;
         let expected = [
             Split {
@@ -678,19 +687,19 @@ mod test {
                         header: ChunkHeader::new_raw(expected_first_blocks, DEFAULT_BLOCKSIZE)
                             .unwrap(),
                         offset: 0,
-                        size: expected_first_blocks as u64 * DEFAULT_BLOCKSIZE as u64,
+                        size: expected_first_blocks as u64 * DEFAULT_BLOCKSIZE.get() as u64,
                     },
                     SplitChunk {
                         header: ChunkHeader::new_raw(expected_second_blocks, DEFAULT_BLOCKSIZE)
                             .unwrap(),
-                        offset: expected_first_blocks as u64 * DEFAULT_BLOCKSIZE as u64,
-                        size: expected_second_blocks as u64 * DEFAULT_BLOCKSIZE as u64,
+                        offset: expected_first_blocks as u64 * DEFAULT_BLOCKSIZE.get() as u64,
+                        size: expected_second_blocks as u64 * DEFAULT_BLOCKSIZE.get() as u64,
                     },
                 ],
             },
             Split {
                 header: FileHeader {
-                    block_size: 4096,
+                    block_size: DEFAULT_BLOCKSIZE,
                     blocks: first_file_blocks + expected_third_blocks,
                     chunks: 2,
                     checksum: 0,
@@ -704,8 +713,8 @@ mod test {
                     SplitChunk {
                         header: ChunkHeader::new_raw(expected_third_blocks, DEFAULT_BLOCKSIZE)
                             .unwrap(),
-                        offset: first_file_blocks as u64 * DEFAULT_BLOCKSIZE as u64,
-                        size: expected_third_blocks as u64 * DEFAULT_BLOCKSIZE as u64,
+                        offset: first_file_blocks as u64 * DEFAULT_BLOCKSIZE.get() as u64,
+                        size: expected_third_blocks as u64 * DEFAULT_BLOCKSIZE.get() as u64,
                     },
                 ],
             },
