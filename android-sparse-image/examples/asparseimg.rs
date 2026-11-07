@@ -4,10 +4,11 @@ use std::{
 };
 
 use android_sparse_image::{
-    split::split_image, ChunkHeader, ChunkHeaderBytes, FileHeader, FileHeaderBytes,
-    CHUNK_HEADER_BYTES_LEN, FILE_HEADER_BYTES_LEN,
+    split::{split_image, split_raw, Split},
+    ChunkHeader, ChunkHeaderBytes, FileHeader, FileHeaderBytes, CHUNK_HEADER_BYTES_LEN,
+    FILE_HEADER_BYTES_LEN,
 };
-use anyhow::Context;
+use anyhow::{bail, Context};
 use clap::Parser;
 
 #[derive(clap::Parser)]
@@ -18,6 +19,12 @@ enum Opts {
     Expand { img: PathBuf, out: PathBuf },
     /// split content of <img> to fit maximum download size
     Split {
+        img: PathBuf,
+        size: u64,
+        out: PathBuf,
+    },
+    /// Split the content of the raw <img> to fit maximum download size
+    SplitRaw {
         img: PathBuf,
         size: u64,
         out: PathBuf,
@@ -112,6 +119,46 @@ fn expand(img: &Path, out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn write_out_splits<F>(
+    splits: Vec<Split>,
+    mut input: F,
+    out: &Path,
+    pad: bool,
+) -> anyhow::Result<()>
+where
+    F: Seek + Read,
+{
+    for (i, split) in splits.iter().enumerate() {
+        let mut out = out.as_os_str().to_os_string();
+        out.push(format!(".{i}"));
+        let mut out =
+            std::fs::File::create(&out).with_context(|| format!("Failed to create {out:?}"))?;
+        out.write_all(&split.header.to_bytes())?;
+        for chunk in &split.chunks {
+            out.write_all(&chunk.header.to_bytes())?;
+
+            input
+                .seek(SeekFrom::Start(chunk.offset))
+                .context("Failed to seek input file")?;
+            let written = std::io::copy(&mut (&mut input).take(chunk.size), &mut out)?;
+            if chunk.size > written {
+                if pad {
+                    //Pad the file by seeking and writing a single trailing 0
+                    out.seek(SeekFrom::Current(
+                        (chunk.size - written).saturating_sub(1) as i64
+                    ))?;
+                    out.write_all(&[0])?;
+                } else {
+                    bail!("Input file was shorter than expected");
+                }
+            }
+        }
+        out.flush().context("Failed to flush file")?;
+    }
+
+    Ok(())
+}
+
 fn split(img: &Path, size: u64, out: &Path) -> anyhow::Result<()> {
     let mut file = std::fs::File::open(img)?;
     let mut header_bytes: FileHeaderBytes = [0; FILE_HEADER_BYTES_LEN];
@@ -130,21 +177,18 @@ fn split(img: &Path, size: u64, out: &Path) -> anyhow::Result<()> {
     }
 
     let splits = split_image(&header, &chunks, size)?;
-    for (i, split) in splits.iter().enumerate() {
-        let mut out = out.as_os_str().to_os_string();
-        out.push(format!(".{i}"));
-        let mut out =
-            std::fs::File::create(&out).with_context(|| format!("Failed to create {out:?}"))?;
-        out.write_all(&split.header.to_bytes())?;
-        for chunk in &split.chunks {
-            out.write_all(&chunk.header.to_bytes())?;
+    write_out_splits(splits, &mut file, out, false)?;
 
-            file.seek(SeekFrom::Start(chunk.offset))
-                .context("Failed to seek input file")?;
-            std::io::copy(&mut (&mut file).take(chunk.size), &mut out)?;
-        }
-    }
+    Ok(())
+}
 
+fn split_raw_img(img: &Path, size: u64, out: &Path) -> anyhow::Result<()> {
+    let mut file = std::fs::File::open(img)?;
+    let file_size = file
+        .seek(SeekFrom::End(0))
+        .context("Failed to seek input file")?;
+    let splits = split_raw(file_size, size)?;
+    write_out_splits(splits, &mut file, out, true)?;
     Ok(())
 }
 
@@ -154,6 +198,7 @@ fn main() -> anyhow::Result<()> {
         Opts::Inspect { img } => inspect(&img)?,
         Opts::Expand { img, out } => expand(&img, &out)?,
         Opts::Split { img, size, out } => split(&img, size, &out)?,
+        Opts::SplitRaw { img, size, out } => split_raw_img(&img, size, &out)?,
     }
 
     Ok(())
