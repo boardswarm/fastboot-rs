@@ -3,6 +3,8 @@
 /// Helpers to split an image into multiple smaller ones
 pub mod split;
 
+use std::num::NonZeroU32;
+
 use bytes::{Buf, BufMut};
 use log::trace;
 use strum::FromRepr;
@@ -14,7 +16,7 @@ pub const FILE_HEADER_BYTES_LEN: usize = 28;
 pub const CHUNK_HEADER_BYTES_LEN: usize = 12;
 /// File magic - This are the first 4 bytes in little-endian
 pub const HEADER_MAGIC: u32 = 0xed26ff3a;
-pub const DEFAULT_BLOCKSIZE: u32 = 4096;
+pub const DEFAULT_BLOCKSIZE: NonZeroU32 = NonZeroU32::new(4096).unwrap();
 
 /// Byte parsing errors
 #[derive(Clone, Debug, Error)]
@@ -27,6 +29,8 @@ pub enum ParseError {
     UnexpectedSize,
     #[error("Header has an unknown chunk type")]
     UnknownChunkType,
+    #[error("Block size is zero")]
+    ZeroBlockSize,
 }
 
 /// Byte array which fits a file header
@@ -35,7 +39,7 @@ pub type FileHeaderBytes = [u8; FILE_HEADER_BYTES_LEN];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileHeader {
     /// Block size in bytes (should be multiple of 4)
-    pub block_size: u32,
+    pub block_size: NonZeroU32,
     /// Number of blocks in the expanded image
     pub blocks: u32,
     /// Number of chunks in the sparse image
@@ -79,7 +83,10 @@ impl FileHeader {
             return Err(ParseError::UnexpectedSize);
         }
 
-        let block_size = bytes.get_u32_le();
+        let block_size = bytes
+            .get_u32_le()
+            .try_into()
+            .or(Err(ParseError::ZeroBlockSize))?;
         let blocks = bytes.get_u32_le();
         let chunks = bytes.get_u32_le();
         let checksum = bytes.get_u32_le();
@@ -102,7 +109,7 @@ impl FileHeader {
         w.put_u16_le(0x0);
         w.put_u16_le(FILE_HEADER_BYTES_LEN as u16);
         w.put_u16_le(CHUNK_HEADER_BYTES_LEN as u16);
-        w.put_u32_le(self.block_size);
+        w.put_u32_le(self.block_size.get());
         w.put_u32_le(self.blocks);
         w.put_u32_le(self.chunks);
         w.put_u32_le(self.checksum);
@@ -110,8 +117,8 @@ impl FileHeader {
         bytes
     }
 
-    pub fn total_size(&self) -> usize {
-        self.blocks as usize * self.block_size as usize
+    pub fn total_size(&self) -> u64 {
+        self.blocks as u64 * self.block_size.get() as u64
     }
 }
 
@@ -132,6 +139,13 @@ pub enum ChunkType {
 
 /// Byte array which fits a chunk header
 pub type ChunkHeaderBytes = [u8; CHUNK_HEADER_BYTES_LEN];
+
+/// Chunk header creation errors
+#[derive(Clone, Debug, Error)]
+pub enum ChunkHeaderError {
+    #[error("Total size of chunk is too big")]
+    TooBig,
+}
 
 /// Header of a chunk
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,16 +168,38 @@ impl ChunkHeader {
         }
     }
 
+    /// Calculate the maximum amount of blocks fitting a raw header
+    pub fn max_raw_blocks(block_size: NonZeroU32) -> u32 {
+        (u32::MAX - CHUNK_HEADER_BYTES_LEN as u32) / block_size
+    }
+
     /// Create a new raw header for a given amount in blocks for block_size
     ///
-    /// The actual data should follow this header
-    pub fn new_raw(blocks: u32, block_size: u32) -> Self {
-        ChunkHeader {
-            chunk_type: ChunkType::Raw,
-            chunk_size: blocks,
-            total_size: (CHUNK_HEADER_BYTES_LEN as u32)
-                .saturating_add(blocks.saturating_mul(block_size)),
+    /// The actual data should follow this header. Returns an error if the amount of blocks is too
+    /// big for the chunk header. Prefer using [ChunkHeader::new_raw_fill]
+    pub fn new_raw(blocks: u32, block_size: NonZeroU32) -> Result<Self, ChunkHeaderError> {
+        let (h, used) = Self::new_raw_fill(blocks, block_size);
+        if used != blocks {
+            Err(ChunkHeaderError::TooBig)
+        } else {
+            Ok(h)
         }
+    }
+
+    /// Create a new raw header using as much of the blocks as possible
+    ///
+    /// The actual data should follow this header. Returns both the chunk header as well as the
+    /// amount of blocks used, which can be less than the passed blocks
+    pub fn new_raw_fill(blocks: u32, block_size: NonZeroU32) -> (Self, u32) {
+        let chunk_size = blocks.min(Self::max_raw_blocks(block_size));
+        (
+            ChunkHeader {
+                chunk_type: ChunkType::Raw,
+                chunk_size,
+                total_size: CHUNK_HEADER_BYTES_LEN as u32 + (chunk_size * block_size.get()),
+            },
+            chunk_size,
+        )
     }
 
     /// Create a new fill header for a given amount of blocks to be filled
@@ -209,13 +245,13 @@ impl ChunkHeader {
     }
 
     /// Resulting size of this chunk in the output
-    pub fn out_size(&self, header: &FileHeader) -> usize {
-        self.chunk_size as usize * header.block_size as usize
+    pub fn out_size(&self, header: &FileHeader) -> u64 {
+        self.chunk_size as u64 * header.block_size.get() as u64
     }
 
     /// Data bytes after the header
-    pub fn data_size(&self) -> usize {
-        (self.total_size as usize).saturating_sub(CHUNK_HEADER_BYTES_LEN)
+    pub fn data_size(&self) -> u64 {
+        (self.total_size as u64).saturating_sub(CHUNK_HEADER_BYTES_LEN as u64)
     }
 }
 
@@ -234,7 +270,7 @@ mod test {
         assert_eq!(
             h,
             FileHeader {
-                block_size: 4096,
+                block_size: DEFAULT_BLOCKSIZE,
                 blocks: 1325431,
                 chunks: 177,
                 checksum: 0xcc0000aa,
@@ -245,7 +281,7 @@ mod test {
     #[test]
     fn file_header_roundtrip() {
         let orig = FileHeader {
-            block_size: 4096,
+            block_size: DEFAULT_BLOCKSIZE,
             blocks: 1024,
             chunks: 42,
             checksum: 0xabcd,
