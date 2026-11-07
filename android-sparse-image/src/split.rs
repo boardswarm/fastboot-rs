@@ -244,6 +244,63 @@ mod test {
     use super::*;
 
     #[test]
+    fn split_validate_sizes() {
+        // output size too small
+        let minimal_size = FILE_HEADER_BYTES_LEN as u64
+            + CHUNK_HEADER_BYTES_LEN as u64 * 2
+            + DEFAULT_BLOCKSIZE.get() as u64;
+        split_raw(4096, minimal_size).expect("Output should be big enough");
+        let r = split_raw(4096, minimal_size - 1);
+        assert!(matches!(r, Err(SplitError::OutputTooSmall)));
+
+        // Input just about right
+        let _ = split_raw(
+            u32::MAX as u64 * DEFAULT_BLOCKSIZE.get() as u64,
+            u32::MAX.into(),
+        )
+        .expect("Input should just be fine");
+
+        // Input size too big
+        let r = split_raw(
+            u32::MAX as u64 * DEFAULT_BLOCKSIZE.get() as u64 + 1,
+            u32::MAX.into(),
+        );
+        assert!(matches!(r, Err(SplitError::InputTooBig)));
+
+        // Test output sizes for split image
+        let header = FileHeader {
+            block_size: DEFAULT_BLOCKSIZE,
+            blocks: 1,
+            chunks: 1,
+            checksum: 0,
+        };
+        let chunks = &[ChunkHeader::new_fill(1)];
+
+        split_image(&header, chunks, minimal_size).expect("blocksize ok, file size ok");
+        let r = split_image(&header, chunks, minimal_size - 1);
+        assert!(matches!(r, Err(SplitError::OutputTooSmall)));
+
+        // Input block size
+        let max_blocksize = u32::MAX - CHUNK_HEADER_BYTES_LEN as u32;
+        let header = FileHeader {
+            block_size: NonZeroU32::new(max_blocksize).unwrap(),
+            blocks: 1,
+            chunks: 1,
+            checksum: 0,
+        };
+        split_image(&header, chunks, u64::MAX).expect("blocksize ok, file size ok");
+
+        let header = FileHeader {
+            block_size: NonZeroU32::new(max_blocksize + 1).unwrap(),
+            blocks: 1,
+            chunks: 1,
+            checksum: 0,
+        };
+        let r = split_image(&header, chunks, u64::MAX);
+        assert!(matches!(r, Err(SplitError::BlocksizeTooBig)));
+    }
+
+    #[test]
     fn split_simple() {
         let header = FileHeader {
             block_size: DEFAULT_BLOCKSIZE,
