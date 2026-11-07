@@ -1,6 +1,6 @@
 [package]
 name = "fastboot-protocol"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Sjoerd Simons <sjoerd@collabora.com>"]
 license = "MIT OR Apache-2.0"
 description = "Fastboot protocol implementation"
@@ -21,7 +21,7 @@ tracing = "0.1.40"
 default = ["nusb/tokio"]
 
 [dev-dependencies]
-android-sparse-image = { path = "../android-sparse-image", version = "0.2.0-rc0" }
+android-sparse-image = { path = "../android-sparse-image", version = "0.2.0" }
 anyhow = "1.0.93"
 clap = { version = "4.5.21", features = ["derive"] }
 tokio = { version = "1.43.1", features = ["full"] }
