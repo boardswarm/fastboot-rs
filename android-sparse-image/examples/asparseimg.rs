@@ -15,8 +15,12 @@ use clap::Parser;
 enum Opts {
     /// Inspect the contents of a sparse image
     Inspect { img: PathBuf },
-    /// Expand the content of <img> to <out>
-    Expand { img: PathBuf, out: PathBuf },
+    /// Expand the content of <images> to <out>
+    Expand {
+        #[arg(required = true, num_args = 1..)]
+        img: Vec<PathBuf>,
+        out: PathBuf,
+    },
     /// split content of <img> to fit maximum download size
     Split {
         img: PathBuf,
@@ -77,7 +81,14 @@ fn inspect(img: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn expand(img: &Path, out: &Path) -> anyhow::Result<()> {
+fn expand(img: &[PathBuf], out: &Path) -> anyhow::Result<()> {
+    for p in img {
+        expand_one(p, out)?;
+    }
+    Ok(())
+}
+
+fn expand_one(img: &Path, out: &Path) -> anyhow::Result<()> {
     let mut file = std::fs::File::open(img)?;
     let output = std::fs::OpenOptions::new()
         .create(true)
@@ -196,7 +207,7 @@ fn main() -> anyhow::Result<()> {
     let opts = Opts::parse();
     match opts {
         Opts::Inspect { img } => inspect(&img)?,
-        Opts::Expand { img, out } => expand(&img, &out)?,
+        Opts::Expand { img, out } => expand(img.as_slice(), &out)?,
         Opts::Split { img, size, out } => split(&img, size, &out)?,
         Opts::SplitRaw { img, size, out } => split_raw_img(&img, size, &out)?,
     }
