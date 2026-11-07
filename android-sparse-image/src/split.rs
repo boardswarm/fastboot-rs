@@ -130,9 +130,11 @@ impl SplitBuilder {
 pub enum SplitError {
     #[error("Size is too small to fit chunks")]
     TooSmall,
+    #[error("Input size is too big to describe")]
+    InputTooBig,
 }
 
-fn check_minimal_size(size: u64, block_size: u32) -> Result<(), SplitError> {
+fn check_output_size(size: u64, block_size: u32) -> Result<(), SplitError> {
     // At the very list the size we split into should be enough to have:
     // * A file header
     // * A Chunk header for an initial don't care block
@@ -150,7 +152,7 @@ pub fn split_image(
     chunks: &[ChunkHeader],
     size: u64,
 ) -> Result<Vec<Split>, SplitError> {
-    check_minimal_size(size, header.block_size)?;
+    check_output_size(size, header.block_size)?;
     let (_, _, builder, mut splits) = chunks.iter().try_fold(
         (
             // output offset in blocks
@@ -203,8 +205,11 @@ pub fn split_image(
 /// raw size is rounded up to multiple of [DEFAULT_BLOCKSIZE] as that's the minimal granularity.
 /// When writing out the android sparse image the data should just be padded as needed as well!
 pub fn split_raw(raw_size: u64, size: u64) -> Result<Vec<Split>, SplitError> {
-    check_minimal_size(size, DEFAULT_BLOCKSIZE)?;
-    let raw_blocks = raw_size.div_ceil(DEFAULT_BLOCKSIZE as u64) as u32;
+    check_output_size(size, DEFAULT_BLOCKSIZE)?;
+    let raw_blocks: u32 = raw_size
+        .div_ceil(DEFAULT_BLOCKSIZE as u64)
+        .try_into()
+        .or(Err(SplitError::InputTooBig))?;
 
     let mut block_offset = 0;
     let mut splits = vec![];
