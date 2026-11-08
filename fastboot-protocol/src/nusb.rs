@@ -30,6 +30,10 @@ pub enum NusbFastBootError {
     FastbootUnexpectedReply,
     #[error("Unknown fastboot response: {0}")]
     FastbootParseError(#[from] FastBootResponseParseError),
+    #[error("Invalid fastboot command")]
+    InvalidCommand,
+    #[error("Incorrect transfer length: expected {expected}, got {actual}")]
+    IncorrectLength { expected: usize, actual: usize },
 }
 
 /// Errors when opening the fastboot device
@@ -140,8 +144,11 @@ impl NusbFastBoot {
 
     #[tracing::instrument(skip_all, err)]
     async fn send_data(&mut self, data: Vec<u8>) -> Result<(), NusbFastBootError> {
+        let expected = data.len();
         self.ep_out.submit(data.into());
-        self.ep_out.next_complete().await.into_result()?;
+        let completion = self.ep_out.next_complete().await;
+        completion.status?;
+        check_length(expected, completion.actual_len)?;
         Ok(())
     }
 
@@ -206,6 +213,62 @@ impl NusbFastBoot {
         self.ep_out.allocate(size)
     }
 
+    /// Execute an implementation-specific command with INFO/TEXT/OKAY/FAIL
+    /// responses. Commands with a data phase require a separate method.
+    pub async fn command(&mut self, command: &str) -> Result<String, NusbFastBootError> {
+        validate_command(command)?;
+        self.send_data(command.as_bytes().to_vec()).await?;
+        self.handle_responses().await
+    }
+
+    /// Fetch a bounded range from a partition. Requires device fetch support.
+    /// The returned bytes are accepted only after the complete DATA payload and
+    /// final OKAY. Callers should chunk large partitions to bound memory use.
+    pub async fn fetch(
+        &mut self,
+        partition: &str,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, NusbFastBootError> {
+        if partition.contains(':') || length == 0 || offset.checked_add(u64::from(length)).is_none()
+        {
+            return Err(NusbFastBootError::InvalidCommand);
+        }
+        let command = format!("fetch:{partition}:{offset:x}:{length:x}");
+        validate_command(&command)?;
+        self.send_data(command.into_bytes()).await?;
+        loop {
+            match self.read_response().await? {
+                FastBootResponse::Info(_) | FastBootResponse::Text(_) => (),
+                FastBootResponse::Data(actual) => {
+                    check_length(length as usize, actual as usize)?;
+                    break;
+                }
+                FastBootResponse::Fail(reason) => {
+                    return Err(NusbFastBootError::FastbootFailed(reason))
+                }
+                _ => return Err(NusbFastBootError::FastbootUnexpectedReply),
+            }
+        }
+        let mut data = Vec::with_capacity(length as usize);
+        while data.len() < length as usize {
+            let remaining = length as usize - data.len();
+            let requested = remaining.min(1024 * 1024).next_multiple_of(self.max_in);
+            self.ep_in.submit(Buffer::new(requested));
+            let completion = self.ep_in.next_complete().await;
+            completion.status?;
+            if completion.actual_len == 0 || completion.actual_len > remaining {
+                return Err(NusbFastBootError::IncorrectLength {
+                    expected: remaining,
+                    actual: completion.actual_len,
+                });
+            }
+            data.extend_from_slice(&completion.buffer);
+        }
+        self.handle_responses().await?;
+        Ok(data)
+    }
+
     /// Get the named variable
     ///
     /// The "all" variable is special; For that [Self::get_all_vars] should be used instead
@@ -225,7 +288,8 @@ impl NusbFastBoot {
             match resp {
                 FastBootResponse::Info(i) => info!("info: {i}"),
                 FastBootResponse::Text(t) => info!("Text: {}", t),
-                FastBootResponse::Data(size) => {
+                FastBootResponse::Data(actual) => {
+                    check_length(size as usize, actual as usize)?;
                     return Ok(DataDownload::new(self, size));
                 }
                 FastBootResponse::Okay(_) => {
@@ -364,7 +428,11 @@ impl DataDownload<'_> {
     /// This will copy all provided data and send it out if enough is collected. The total amount
     /// of data being sent should not exceed the download size
     pub async fn extend_from_slice(&mut self, mut data: &[u8]) -> Result<(), DownloadError> {
-        self.update_size(data.len() as u32)?;
+        let size = u32::try_from(data.len()).map_err(|_| NusbFastBootError::IncorrectLength {
+            expected: self.left as usize,
+            actual: data.len(),
+        })?;
+        self.update_size(size)?;
         loop {
             let left = self.current.capacity() - self.current.len();
             if left >= data.len() {
@@ -389,7 +457,7 @@ impl DataDownload<'_> {
         }
 
         let left = self.current.capacity() - self.current.len();
-        let size = left.min(max);
+        let size = left.min(max).min(self.left as usize);
         self.update_size(size as u32)?;
 
         let len = self.current.len();
@@ -414,6 +482,7 @@ impl DataDownload<'_> {
         } else {
             let mut completion = self.fastboot.ep_out.next_complete().await;
             completion.status.map_err(NusbFastBootError::from)?;
+            check_length(completion.buffer.len(), completion.actual_len)?;
             completion.buffer.clear();
             completion.buffer
         };
@@ -443,9 +512,47 @@ impl DataDownload<'_> {
         while self.fastboot.ep_out.pending() > 0 {
             let completion = self.fastboot.ep_out.next_complete().await;
             completion.status.map_err(NusbFastBootError::from)?;
+            check_length(completion.buffer.len(), completion.actual_len)?;
         }
 
         self.fastboot.handle_responses().await?;
         Ok(())
+    }
+}
+
+fn validate_command(command: &str) -> Result<(), NusbFastBootError> {
+    if command.is_empty()
+        || command.len() > 64
+        || !command.bytes().all(|b| (0x20..=0x7e).contains(&b))
+    {
+        Err(NusbFastBootError::InvalidCommand)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_length(expected: usize, actual: usize) -> Result<(), NusbFastBootError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(NusbFastBootError::IncorrectLength { expected, actual })
+    }
+}
+
+#[cfg(test)]
+mod transfer_checks {
+    use super::*;
+    #[test]
+    fn rejects_short_or_excess_completions_and_changed_download_size() {
+        assert!(check_length(4096, 2048).is_err());
+        assert!(check_length(4096, 4097).is_err());
+        assert!(check_length(4096, 4096).is_ok());
+    }
+    #[test]
+    fn bounded_generic_commands() {
+        assert!(validate_command("oem custom-command").is_ok());
+        for bad in ["", "getvar:version\0", "reboot\n", &"x".repeat(65)] {
+            assert!(validate_command(bad).is_err());
+        }
     }
 }
